@@ -1,122 +1,138 @@
-const readline = require("readline");
-const axios = require("axios");
+const express = require("express");
+const { Pool } = require("pg");
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
+const app = express();
+const PORT = 3000;
+
+// DB connection pool
+const pool = new Pool({
+  host: "db01",
+  port: 5432,
+  user: "admin",
+  password: "admin123",
+  database: "projeto_cc"
 });
 
-let token = null;
-let username = null;
+// In-memory session store
+const sessions = new Map();
 
-async function showMenu() {
-  console.log("\n=== Web API CLI Client ===");
-  console.log("1. Login");
-  console.log("2. Health check");
-  console.log("3. List feriados");
-  console.log("4. Add feriado (admin only)");
-  console.log("5. Logout");
-  console.log("0. Exit");
-  
-  rl.question("Choose option: ", handleChoice);
+app.use(express.json());
+
+// Health check (public)
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Auth middleware
+function authRequired(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing or invalid Authorization header" });
+  }
+
+  const token = authHeader.substring("Bearer ".length);
+  const session = sessions.get(token);
+  if (!session) {
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+
+  req.user = session;
+  next();
 }
 
-async function handleChoice(choice) {
+function adminOnly(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ error: "Admin role required" });
+  }
+  next();
+}
+
+// Login
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: "Missing credentials" });
+  }
+
   try {
-    switch (choice) {
-      case "1": await login(); break;
-      case "2": await healthCheck(); break;
-      case "3": await listFeriados(); break;
-      case "4": await addFeriado(); break;
-      case "5":
-        token = null;
-        username = null;
-        console.log("Logged out.");
-        break;
-      case "0":
-        console.log("Goodbye!");
-        rl.close();
-        return;
-      default:
-        console.log("Invalid option.");
+    const result = await pool.query(
+      "SELECT id, username, password_hash, role FROM users WHERE username = $1",
+      [username]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(401).json({ error: "Invalid username or password" });
     }
-  } catch (err) {
-    console.error("Error:", err.message);
-  }
-  showMenu();
-}
 
-async function login() {
-  rl.question("Username: ", async (user) => {
-    rl.question("Password: ", async (pass) => {
-      try {
-        const response = await axios.post("http://127.0.0.1:3000/login", {
-          username: user,
-          password: pass
-        });
-        
-        token = response.data.token;
-        username = response.data.username;
-        console.log(`✅ Login successful! Role: ${response.data.role}`);
-      } catch (err) {
-        console.log(`❌ ${err.response?.data?.error || err.message}`);
-      }
+    const user = result.rows[0];
+    const ok = bcrypt.compareSync(password, user.password_hash);
+
+    if (!ok) {
+      return res.status(401).json({ error: "Invalid username or password" });
+    }
+
+    // Create session token
+    const token = crypto.randomBytes(24).toString("hex");
+    sessions.set(token, {
+      userId: user.id,
+      username: user.username,
+      role: user.role
     });
-  });
-}
 
-async function healthCheck() {
+    return res.json({
+      message: "Login successful",
+      token,
+      role: user.role
+    });
+  } catch (err) {
+    console.error("Error in /login:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// GET feriados (any logged-in user)
+app.get("/feriados", authRequired, async (req, res) => {
   try {
-    const response = await axios.get("http://127.0.0.1:3000/health");
-    console.log("Health:", response.data.status);
+    const result = await pool.query(
+      "SELECT id, day, month, description FROM feriados ORDER BY month, day"
+    );
+    const formatted = result.rows.map(f => ({
+      id: f.id,
+      day: f.day,
+      month: f.month,
+      description: f.description,
+      label: `${f.day}-${f.month} - ${f.description}`
+    }));
+    res.json(formatted);
   } catch (err) {
-    console.log(`❌ ${err.message}`);
+    console.error("Error querying feriados:", err);
+    res.status(500).json({ error: "DB error" });
   }
-}
+});
 
-async function listFeriados() {
-  if (!token) return console.log("❌ Please login first");
-  
+// POST feriado (admin only)
+app.post("/feriados", authRequired, adminOnly, async (req, res) => {
+  const { day, month, description } = req.body;
+
+  if (!day || !month || !description) {
+    return res.status(400).json({ error: "Missing day, month or description" });
+  }
+
   try {
-    const response = await axios.get("http://127.0.0.1:3000/feriados", {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    
-    console.log("\nFeriados:");
-    response.data.forEach(f => {
-      console.log(`  ${f.label}`);
-    });
+    const result = await pool.query(
+      "INSERT INTO feriados (day, month, description) VALUES ($1, $2, $3) RETURNING id, day, month, description",
+      [day, month, description]
+    );
+    res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.log(`❌ ${err.response?.data?.error || err.message}`);
+    console.error("Error inserting feriado:", err);
+    res.status(500).json({ error: "DB error" });
   }
-}
+});
 
-async function addFeriado() {
-  if (!token) return console.log("❌ Please login first");
-  
-  rl.question("Day (1-31): ", (day) => {
-    rl.question("Month (1-12): ", (month) => {
-      rl.question("Description: ", async (desc) => {
-        try {
-          const response = await axios.post("http://127.0.0.1:3000/feriados", {
-            day: parseInt(day),
-            month: parseInt(month),
-            description: desc
-          }, {
-            headers: { 
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json"
-            }
-          });
-          
-          console.log(`✅ Added: ${response.data.label}`);
-        } catch (err) {
-          console.log(`❌ ${err.response?.data?.error || err.message}`);
-        }
-      });
-    });
-  });
-}
-
-console.log("Connect to web01 API...");
-showMenu();
+app.listen(PORT, () => {
+  console.log(`Web API listening on port ${PORT}`);
+});
