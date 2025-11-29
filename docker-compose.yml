@@ -1,0 +1,58 @@
+version: "3.9"
+
+networks:
+  dmz-net:
+    driver: bridge
+  internal-net:
+    driver: bridge
+
+services:
+  web01:
+    build: ./WEB
+    container_name: web01
+    networks:
+      - dmz-net
+      - internal-net   # so web01 can talk to db01 over internal
+    ports:
+      - "80:80"
+    tty: true
+
+  db01:
+    image: postgres:15
+    container_name: db01
+    networks:
+      - internal-net
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: projeto_cc
+    volumes:
+      - ./DB/init-feriados.sql:/docker-entrypoint-initdb.d/init-feriados.sql
+      - ./DB/init-users.sql:/docker-entrypoint-initdb.d/init-users.sql
+    ports:
+      - "5432:5432" 
+    tty: true
+
+  vpn01:
+    image: debian:12
+    container_name: vpn01
+    networks:
+      - internal-net
+    ports:
+      - "2222:22"
+    tty: true
+
+  ca01:
+    image: debian:12
+    container_name: ca01
+    networks:
+      - internal-net
+    tty: true
+
+  fw01:
+    image: debian:12
+    container_name: fw01
+    networks:
+      - dmz-net
+      - internal-net
+    tty: true
