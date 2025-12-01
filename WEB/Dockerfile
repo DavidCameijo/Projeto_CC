@@ -2,8 +2,9 @@ FROM debian:12
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       nginx curl ca-certificates nodejs npm \
+       nginx curl ca-certificates nodejs npm jq \
     && rm -rf /var/lib/apt/lists/* \
+
 
 WORKDIR /opt/app
 COPY app/ . 

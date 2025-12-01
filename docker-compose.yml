@@ -14,7 +14,7 @@ services:
       - dmz-net
       - internal-net   # so web01 can talk to db01 over internal
     ports:
-      - "80:80"
+      - "3000:3000"
     tty: true
 
   db01:
@@ -23,9 +23,9 @@ services:
     networks:
       - internal-net
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin123
-      POSTGRES_DB: projeto_cc
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./DB/init-feriados.sql:/docker-entrypoint-initdb.d/init-feriados.sql
       - ./DB/init-users.sql:/docker-entrypoint-initdb.d/init-users.sql
@@ -33,6 +33,17 @@ services:
       - "5432:5432" 
     tty: true
 
+  nginx:
+    image: nginx:latest
+    container_name: nginx01
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - dmz-net
+      
+      
   vpn01:
     image: debian:12
     container_name: vpn01
