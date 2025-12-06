@@ -1,22 +1,20 @@
 const express = require("express");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
+
+require('dotenv').config();
 
 const app = express();
 const PORT = 3000;
 
 // DB connection pool
 const pool = new Pool({
-  host: "db01",
-  port: 5432,
-  user: "admin",
-  password: "admin123",
-  database: "projeto_cc"
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME
 });
-
-// In-memory session store
-const sessions = new Map();
 
 app.use(express.json());
 
@@ -25,36 +23,109 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Auth middleware
-function authRequired(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Missing or invalid Authorization header" });
+app.get("/", (req, res) => {
+  res.send(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Auth Demo</title>
+      </head>
+      <body>
+        <h1>Register</h1>
+        <form id="registerForm">
+          <input name="username" placeholder="Username" required />
+          <input name="password" type="password" placeholder="Password" required />
+          <button type="submit">Register</button>
+        </form>
+        <pre id="registerResult"></pre>
+
+        <h1>Login</h1>
+        <form id="loginForm">
+          <input name="username" placeholder="Username" required />
+          <input name="password" type="password" placeholder="Password" required />
+          <button type="submit">Login</button>
+        </form>
+        <pre id="loginResult"></pre>
+
+        <script>
+          async function handleForm(formId, url, resultId) {
+            const form = document.getElementById(formId);
+            form.addEventListener("submit", async (e) => {
+              e.preventDefault();
+              const data = Object.fromEntries(new FormData(form).entries());
+              const res = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data),
+              });
+              const json = await res.json();
+              document.getElementById(resultId).textContent =
+                JSON.stringify(json, null, 2);
+            });
+          }
+
+          handleForm("registerForm", "/register", "registerResult");
+          handleForm("loginForm", "/login", "loginResult");
+        </script>
+      </body>
+    </html>
+  `);
+});
+
+
+// Register endpoint
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: "Missing username or password", code: "MISSING_FIELDS" });
   }
 
-  const token = authHeader.substring("Bearer ".length);
-  const session = sessions.get(token);
-  if (!session) {
-    return res.status(401).json({ error: "Invalid or expired token" });
+  if (username.length < 3 || username.length > 50) {
+    return res.status(400).json({ error: "Username must be 3-50 characters", code: "INVALID_USERNAME" });
   }
 
-  req.user = session;
-  next();
-}
-
-function adminOnly(req, res, next) {
-  if (!req.user || req.user.role !== "admin") {
-    return res.status(403).json({ error: "Admin role required" });
+  if (password.length < 8) {
+    return res.status(400).json({ error: "Password must be at least 8 characters", code: "WEAK_PASSWORD" });
   }
-  next();
-}
 
-// Login
+  try {
+    // Check if user already exists
+    const existing = await pool.query("SELECT id FROM users WHERE username = $1", [username]);
+    if (existing.rowCount > 0) {
+      console.log(`[${new Date().toISOString()}] REGISTER_FAILED: username=${username} reason=already_exists`);
+      return res.status(409).json({ error: "User already exists", code: "USER_EXISTS" });
+    }
+
+    // Hash password with bcrypt
+    const passwordHash = bcrypt.hashSync(password, 10);
+
+    // Insert new user
+    const result = await pool.query(
+      "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role",
+      [username, passwordHash, "user"]
+    );
+
+    const user = result.rows[0];
+    console.log(`[${new Date().toISOString()}] REGISTER_SUCCESS: username=${username}`);
+
+    return res.status(201).json({
+      message: "User registered successfully",
+      user: { id: user.id, username: user.username, role: user.role }
+    });
+  } catch (err) {
+    console.error("Error in /register:", err);
+    return res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" });
+  }
+});
+
+// Login endpoint
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
-    return res.status(400).json({ error: "Missing credentials" });
+    return res.status(400).json({ error: "Missing credentials", code: "MISSING_FIELDS" });
   }
 
   try {
@@ -64,72 +135,27 @@ app.post("/login", async (req, res) => {
     );
 
     if (result.rowCount === 0) {
-      return res.status(401).json({ error: "Invalid username or password" });
+      console.log(`[${new Date().toISOString()}] LOGIN_FAILED: username=${username} reason=user_not_found`);
+      return res.status(401).json({ error: "Invalid username or password", code: "AUTH_FAILED" });
     }
 
     const user = result.rows[0];
-    const ok = bcrypt.compareSync(password, user.password_hash);
+    const passwordMatch = bcrypt.compareSync(password, user.password_hash);
 
-    if (!ok) {
-      return res.status(401).json({ error: "Invalid username or password" });
+    if (!passwordMatch) {
+      console.log(`[${new Date().toISOString()}] LOGIN_FAILED: username=${username} reason=wrong_password`);
+      return res.status(401).json({ error: "Invalid username or password", code: "AUTH_FAILED" });
     }
 
-    // Create session token
-    const token = crypto.randomBytes(24).toString("hex");
-    sessions.set(token, {
-      userId: user.id,
-      username: user.username,
-      role: user.role
-    });
+    console.log(`[${new Date().toISOString()}] LOGIN_SUCCESS: username=${username}`);
 
-    return res.json({
+    return res.status(200).json({
       message: "Login successful",
-      token,
-      role: user.role
+      user: { id: user.id, username: user.username, role: user.role }
     });
   } catch (err) {
     console.error("Error in /login:", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// GET feriados (any logged-in user)
-app.get("/feriados", authRequired, async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT id, day, month, description FROM feriados ORDER BY month, day"
-    );
-    const formatted = result.rows.map(f => ({
-      id: f.id,
-      day: f.day,
-      month: f.month,
-      description: f.description,
-      label: `${f.day}-${f.month} - ${f.description}`
-    }));
-    res.json(formatted);
-  } catch (err) {
-    console.error("Error querying feriados:", err);
-    res.status(500).json({ error: "DB error" });
-  }
-});
-
-// POST feriado (admin only)
-app.post("/feriados", authRequired, adminOnly, async (req, res) => {
-  const { day, month, description } = req.body;
-
-  if (!day || !month || !description) {
-    return res.status(400).json({ error: "Missing day, month or description" });
-  }
-
-  try {
-    const result = await pool.query(
-      "INSERT INTO feriados (day, month, description) VALUES ($1, $2, $3) RETURNING id, day, month, description",
-      [day, month, description]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error("Error inserting feriado:", err);
-    res.status(500).json({ error: "DB error" });
+    return res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" });
   }
 });
 
