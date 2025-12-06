@@ -4,11 +4,12 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL,
   two_factor_secret TEXT,
+  two_factor_enabled BOOLEAN DEFAULT FALSE
 );
 
-INSERT INTO users (username, password_hash, role) VALUES
-  ('admin', '$2a$10$/JKoT9mRo00QZgBlunx4DeT/PWdDFPj/KoM0sQaA6Gl4NiH0kYq6G', 'admin'),
-  ('user', '$2a$10$8t7druW5fOHrlNYz39OLT..Nfx2xTG38oWs7WAkgYWe8MlrCAWgsC', 'reader')
+INSERT INTO users (username, password_hash, role,two_factor_enabled) VALUES
+  ('admin', '$2a$10$/JKoT9mRo00QZgBlunx4DeT/PWdDFPj/KoM0sQaA6Gl4NiH0kYq6G', 'admin',FALSE),
+  ('user', '$2a$10$8t7druW5fOHrlNYz39OLT..Nfx2xTG38oWs7WAkgYWe8MlrCAWgsC', 'reader',FALSE)
 
   
 ON CONFLICT (username) DO NOTHING;
