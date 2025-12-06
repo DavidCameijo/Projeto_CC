@@ -15,7 +15,12 @@ services:
       - internal-net   # so web01 can talk to db01 over internal
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     tty: true
+    depends_on:
+      db01:
+        condition: service_healthy
 
   db01:
     image: postgres:15
@@ -23,15 +28,20 @@ services:
     networks:
       - internal-net
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${DB_USER}           # ← Changed to DB_USER
+      POSTGRES_PASSWORD: ${DB_PASSWORD}   # ← Changed to DB_PASSWORD
+      POSTGRES_DB: ${DB_NAME}             # ← Changed to DB_NAME
     volumes:
-      - ./DB/init-feriados.sql:/docker-entrypoint-initdb.d/init-feriados.sql
       - ./DB/init-users.sql:/docker-entrypoint-initdb.d/init-users.sql
     ports:
-      - "5432:5432" 
+      - "5432:5432"
     tty: true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 
   nginx:
     image: nginx:latest
@@ -44,13 +54,13 @@ services:
       - dmz-net
       
       
-  vpn01:
+  ssh01:
     image: debian:12
-    container_name: vpn01
+    container_name: ssh01
     networks:
       - internal-net
     ports:
-      - "2222:22"
+      - "2223:22"
     tty: true
 
   ca01:
