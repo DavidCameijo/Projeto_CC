@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL,
-  two_factor_secret TEXT  
+  two_factor_secret TEXT,
 );
 
 INSERT INTO users (username, password_hash, role) VALUES
