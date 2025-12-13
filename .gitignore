@@ -1,2 +1,20 @@
 node_modules/
 .env
+
+# PKI - Chaves privadas e certificados (NUNCA commitar!)
+pki/root-ca/private/
+pki/intermediate-ca/private/
+pki/ssh-ca/private/
+pki/ssh-ca/user-certs/*-key
+pki/ssh-ca/user-certs/*-key.pub
+pki/*-key.pem
+pki/*.pem
+pki/*.csr
+
+# PKI - Backups e ficheiros temporários
+pki/**/*.old
+pki/**/*.backup*
+pki/checksums/checksums.sha256
+
+# SSH - Checksums na VM (não commitar)
+SSH01/verify-ssh-integrity.sh

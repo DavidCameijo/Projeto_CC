@@ -1,0 +1,108 @@
+# OpenSSL Configuration for Intermediate CA
+# Assignment 2 - PKI Infrastructure
+
+[ ca ]
+default_ca = CA_default
+
+[ CA_default ]
+# Diretório base da Intermediate CA (relativo à localização deste ficheiro)
+dir = .
+
+# Ficheiros da CA
+certs = $dir/certs
+crl_dir = $dir/crl
+new_certs_dir = $dir/newcerts
+database = $dir/index.txt
+serial = $dir/serial
+RANDFILE = $dir/private/.rand
+
+# Chave privada e certificado da Intermediate CA
+private_key = $dir/private/intermediate-ca.key
+certificate = $dir/certs/intermediate-ca.crt
+
+# Política de certificação (mais flexível para certificados de servidor)
+policy = policy_loose
+
+# Extensões para certificados de servidor
+x509_extensions = v3_server
+
+# Comandos padrão
+default_days = 1825   # 5 anos para Intermediate CA
+default_crl_days = 30 # CRL válido por 30 dias
+default_md = sha256   # SHA-256 conforme Assignment 1
+
+# Manter extensões do certificado
+copy_extensions = copy
+
+# Mensagens
+preserve = no
+
+[ policy_strict ]
+# Política estrita (não usada na Intermediate CA)
+countryName = match
+stateOrProvinceName = optional
+localityName = optional
+organizationName = match
+organizationalUnitName = optional
+commonName = supplied
+emailAddress = optional
+
+[ policy_loose ]
+# Política flexível para certificados de servidor
+countryName = optional
+stateOrProvinceName = optional
+localityName = optional
+organizationName = optional
+organizationalUnitName = optional
+commonName = supplied
+emailAddress = optional
+
+[ req ]
+# Configurações para gerar Certificate Signing Requests
+default_bits = 4096
+prompt = no
+default_md = sha256
+distinguished_name = req_distinguished_name
+string_mask = utf8only
+
+[ req_distinguished_name ]
+# Informações da Intermediate CA
+countryName = PT
+stateOrProvinceName = Portugal
+localityName = Coimbra
+organizationName = Assignment 2 PKI
+organizationalUnitName = Intermediate CA
+commonName = Intermediate CA - Assignment 2
+
+[ v3_ca ]
+# Extensões para certificados CA (não usado na Intermediate CA)
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true, pathlen:0
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+
+[ v3_server ]
+# Extensões para certificados de servidor TLS
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer:always
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+
+# Subject Alternative Names (será preenchido dinamicamente)
+subjectAltName = @alt_names
+
+# CRL Distribution Points
+crlDistributionPoints = URI:file://../intermediate-ca/crl/intermediate-ca.crl.pem
+
+# Authority Information Access
+authorityInfoAccess = OCSP;URI:http://ca01.org.local/ocsp,caIssuers;URI:file://../intermediate-ca/certs/intermediate-ca.crt
+
+[ alt_names ]
+# Será preenchido dinamicamente pelos scripts de emissão
+DNS.1 = localhost
+
+[ v3_req ]
+# Extensões para Certificate Signing Requests de servidor
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
