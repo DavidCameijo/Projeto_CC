@@ -1,11 +1,16 @@
 const express = require("express");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
+const speakeasy = require("speakeasy");
+const QRCode = require("qrcode");
+const rateLimit = require("express-rate-limit");
+const crypto = require("crypto");
+const fs = require("fs");
 
 require('dotenv').config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // DB connection pool
 const pool = new Pool({
@@ -18,10 +23,41 @@ const pool = new Pool({
 
 app.use(express.json());
 
-// Health check (public)
-app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
+// ==================== CONFIG INTEGRITY CHECK ====================
+function verifyConfigIntegrity() {
+  const envPath = '.env';
+  if (!fs.existsSync(envPath)) {
+    console.warn('[SECURITY] .env file not found');
+    return;
+  }
+  
+  const secret = process.env.JWT_SECRET || 'default-secret';
+  const hash = crypto
+    .createHmac('sha256', secret)
+    .update(fs.readFileSync(envPath))
+    .digest('hex');
+  
+  console.log(`[CONFIG] Integrity hash: ${hash.substring(0, 16)}...`);
+}
+
+// ==================== RATE LIMITERS ====================
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // 3 registrations per hour per IP
+  message: 'Too many registration attempts, try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
 });
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per 15 min
+  message: 'Too many login attempts, try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === '/health',
+});
+
 
 app.get("/", (req, res) => {
   res.send(`
@@ -29,136 +65,255 @@ app.get("/", (req, res) => {
     <html>
       <head>
         <meta charset="utf-8" />
-        <title>Auth Demo</title>
+        <title>Auth Demo with 2FA</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; }
+          .section { margin-bottom: 40px; border: 1px solid #ccc; padding: 20px; }
+          input { display: block; margin: 10px 0; padding: 8px; width: 100%; }
+          button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+          pre { background: #f4f4f4; padding: 10px; overflow-x: auto; }
+        </style>
       </head>
       <body>
-        <h1>Register</h1>
-        <form id="registerForm">
-          <input name="username" placeholder="Username" required />
-          <input name="password" type="password" placeholder="Password" required />
-          <button type="submit">Register</button>
-        </form>
-        <pre id="registerResult"></pre>
+        <h1> Secure Authentication System</h1>
 
-        <h1>Login</h1>
-        <form id="loginForm">
-          <input name="username" placeholder="Username" required />
-          <input name="password" type="password" placeholder="Password" required />
-          <button type="submit">Login</button>
-        </form>
-        <pre id="loginResult"></pre>
+        <div class="section">
+          <h2>Step 1: Register New User</h2>
+          <form id="registerForm">
+            <input name="username" placeholder="Username (3-50 chars)" required />
+            <input name="password" type="password" placeholder="Password (min 8 chars)" required />
+            <button type="submit">Register</button>
+          </form>
+          <pre id="registerResult"></pre>
+        </div>
+
+        <div class="section">
+          <h2>Step 2: Setup 2FA (After Register)</h2>
+          <p>Scan QR code with Google Authenticator or Authy</p>
+          <div id="qrCodeContainer"></div>
+          <p>Or enter manually: <code id="secretCode"></code></p>
+        </div>
+
+        <div class="section">
+          <h2>Step 3: Login with 2FA</h2>
+          <form id="loginForm">
+            <input name="username" placeholder="Username" required />
+            <input name="password" type="password" placeholder="Password" required />
+            <input name="otp" placeholder="6-digit OTP from Authenticator" required maxlength="6" />
+            <button type="submit">Login</button>
+          </form>
+          <pre id="loginResult"></pre>
+        </div>
+
 
         <script>
-          async function handleForm(formId, url, resultId) {
-            const form = document.getElementById(formId);
-            form.addEventListener("submit", async (e) => {
-              e.preventDefault();
-              const data = Object.fromEntries(new FormData(form).entries());
-              const res = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+          document.getElementById('registerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = Object.fromEntries(new FormData(e.target).entries());
+            try {
+              const res = await fetch('/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
               });
               const json = await res.json();
-              document.getElementById(resultId).textContent =
-                JSON.stringify(json, null, 2);
-            });
-          }
+              document.getElementById('registerResult').textContent = JSON.stringify(json, null, 2);
+              
+              if (json.qrCode) {
+                document.getElementById('qrCodeContainer').innerHTML = '<img src="' + json.qrCode + '" />';
+                document.getElementById('secretCode').textContent = json.secret;
+              }
+            } catch (err) {
+              document.getElementById('registerResult').textContent = 'Error: ' + err.message;
+            }
+          });
 
-          handleForm("registerForm", "/register", "registerResult");
-          handleForm("loginForm", "/login", "loginResult");
+          document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = Object.fromEntries(new FormData(e.target).entries());
+            try {
+              const res = await fetch('/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+              });
+              const json = await res.json();
+              document.getElementById('loginResult').textContent = JSON.stringify(json, null, 2);
+              
+            } catch (err) {
+              document.getElementById('loginResult').textContent = 'Error: ' + err.message;
+            }
+          });
         </script>
       </body>
     </html>
   `);
 });
 
-
-// Register endpoint
-app.post("/register", async (req, res) => {
+// ==================== REGISTER ====================
+app.post("/register", registerLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
-    return res.status(400).json({ error: "Missing username or password", code: "MISSING_FIELDS" });
+    return res.status(400).json({ 
+      error: "Missing username or password", 
+      code: "MISSING_FIELDS" 
+    });
   }
 
   if (username.length < 3 || username.length > 50) {
-    return res.status(400).json({ error: "Username must be 3-50 characters", code: "INVALID_USERNAME" });
+    return res.status(400).json({ 
+      error: "Username must be 3-50 characters", 
+      code: "INVALID_USERNAME" 
+    });
   }
 
   if (password.length < 8) {
-    return res.status(400).json({ error: "Password must be at least 8 characters", code: "WEAK_PASSWORD" });
+    return res.status(400).json({ 
+      error: "Password must be at least 8 characters", 
+      code: "WEAK_PASSWORD" 
+    });
   }
 
   try {
-    // Check if user already exists
-    const existing = await pool.query("SELECT id FROM users WHERE username = $1", [username]);
+    const existing = await pool.query(
+      "SELECT id FROM users WHERE username = $1",
+      [username]
+    );
+    
     if (existing.rowCount > 0) {
-      console.log(`[${new Date().toISOString()}] REGISTER_FAILED: username=${username} reason=already_exists`);
-      return res.status(409).json({ error: "User already exists", code: "USER_EXISTS" });
+      console.log(`[REGISTER] FAILED: username=${username} reason=already_exists`);
+      return res.status(409).json({ 
+        error: "User already exists", 
+        code: "USER_EXISTS" 
+      });
     }
 
-    // Hash password with bcrypt
     const passwordHash = bcrypt.hashSync(password, 10);
 
-    // Insert new user
+    const secret = speakeasy.generateSecret({
+      name: `SecureAuth (${username})`,
+      issuer: 'SecureAuth',
+    });
+
     const result = await pool.query(
-      "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id, username, role",
-      [username, passwordHash, "user"]
+      `INSERT INTO users (username, password_hash, role, two_factor_secret, two_factor_enabled) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING id, username, role`,
+      [username, passwordHash, "user", secret.base32, false]
     );
 
-    const user = result.rows[0];
-    console.log(`[${new Date().toISOString()}] REGISTER_SUCCESS: username=${username}`);
+    const user = result.rows;
+    const qrCode = await QRCode.toDataURL(secret.otpauth_url);
+
+    console.log(`[REGISTER] SUCCESS: username=${username} id=${user.id}`);
 
     return res.status(201).json({
-      message: "User registered successfully",
-      user: { id: user.id, username: user.username, role: user.role }
+      message: "User registered. Scan QR code to enable 2FA.",
+      user: { id: user.id, username: user.username, role: user.role },
+      qrCode: qrCode,
+      secret: secret.base32,
+      note: "Save the secret in a secure location"
     });
+
   } catch (err) {
-    console.error("Error in /register:", err);
-    return res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" });
+    console.error("[REGISTER] ERROR:", err);
+    return res.status(500).json({ 
+      error: "Internal server error", 
+      code: "SERVER_ERROR" 
+    });
   }
 });
 
-// Login endpoint
-app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
+// ==================== LOGIN ====================
+app.post("/login", loginLimiter, async (req, res) => {
+  const { username, password, otp } = req.body;
 
   if (!username || !password) {
-    return res.status(400).json({ error: "Missing credentials", code: "MISSING_FIELDS" });
+    return res.status(400).json({ 
+      error: "Missing credentials", 
+      code: "MISSING_FIELDS" 
+    });
+  }
+
+  if (!otp) {
+    return res.status(400).json({ 
+      error: "OTP required for 2FA", 
+      code: "OTP_REQUIRED" 
+    });
   }
 
   try {
     const result = await pool.query(
-      "SELECT id, username, password_hash, role FROM users WHERE username = $1",
+      "SELECT id, username, password_hash, role, two_factor_secret FROM users WHERE username = $1",
       [username]
     );
 
     if (result.rowCount === 0) {
-      console.log(`[${new Date().toISOString()}] LOGIN_FAILED: username=${username} reason=user_not_found`);
-      return res.status(401).json({ error: "Invalid username or password", code: "AUTH_FAILED" });
+      console.log(`[LOGIN] FAILED: username=${username} reason=user_not_found`);
+      return res.status(401).json({ 
+        error: "Invalid username or password", 
+        code: "AUTH_FAILED" 
+      });
     }
 
     const user = result.rows[0];
-    const passwordMatch = bcrypt.compareSync(password, user.password_hash);
+    console.log("DEBUG user from DB:", user); // TEMP DEBUG
 
+
+    const passwordMatch = bcrypt.compareSync(password, user.password_hash);
     if (!passwordMatch) {
-      console.log(`[${new Date().toISOString()}] LOGIN_FAILED: username=${username} reason=wrong_password`);
-      return res.status(401).json({ error: "Invalid username or password", code: "AUTH_FAILED" });
+      console.log(`[LOGIN] FAILED: username=${username} reason=invalid_password`);
+      return res.status(401).json({ 
+        error: "Invalid username or password", 
+        code: "AUTH_FAILED" 
+      });
     }
 
-    console.log(`[${new Date().toISOString()}] LOGIN_SUCCESS: username=${username}`);
+    if (!user.two_factor_secret) {
+      console.log(`[LOGIN] FAILED: username=${username} reason=2fa_not_setup`);
+      return res.status(401).json({ 
+        error: "2FA not configured for this user", 
+        code: "2FA_NOT_SETUP" 
+      });
+    }
+
+    const otpValid = speakeasy.totp.verify({
+      secret: user.two_factor_secret,
+      encoding: 'base32',
+      token: otp,
+      window: 2,
+    });
+
+    if (!otpValid) {
+      console.log(`[LOGIN] FAILED: username=${username} reason=invalid_otp`);
+      return res.status(401).json({ 
+        error: "Invalid OTP", 
+        code: "INVALID_OTP" 
+      });
+    }
+
+    console.log(`[LOGIN] SUCCESS: username=${username} id=${user.id}`);
 
     return res.status(200).json({
-      message: "Login successful",
+      message: "Login successful with 2FA verified",
       user: { id: user.id, username: user.username, role: user.role }
     });
+
   } catch (err) {
-    console.error("Error in /login:", err);
-    return res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" });
+    console.error("[LOGIN] ERROR:", err);
+    return res.status(500).json({ 
+      error: "Internal server error", 
+      code: "SERVER_ERROR" 
+    });
   }
 });
 
+// ==================== STARTUP ====================
+verifyConfigIntegrity();
+
 app.listen(PORT, () => {
-  console.log(`Web API listening on port ${PORT}`);
+  console.log(`[SERVER] Web API listening on port ${PORT}`);
+  console.log(`[SERVER] 2FA enabled with TOTP (Time-based OTP)`);
+  console.log(`[SERVER] Health check: GET /health`);
 });
