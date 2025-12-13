@@ -1,0 +1,1 @@
+V	301208164328Z		1000	unknown	/C=PT/ST=Portugal/L=Coimbra/O=Assignment 2 PKI/OU=Intermediate CA/CN=Intermediate CA - Assignment 2

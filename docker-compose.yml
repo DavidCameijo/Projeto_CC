@@ -53,15 +53,6 @@ services:
     networks:
       - dmz-net
       
-      
-  ssh01:
-    image: debian:12
-    container_name: ssh01
-    networks:
-      - internal-net
-    ports:
-      - "2223:22"
-    tty: true
 
   ca01:
     image: debian:12
