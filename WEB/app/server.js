@@ -1,7 +1,6 @@
 const express = require("express");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const speakeasy = require("speakeasy");
 const QRCode = require("qrcode");
 const rateLimit = require("express-rate-limit");
@@ -59,29 +58,6 @@ const loginLimiter = rateLimit({
   skip: (req) => req.path === '/health',
 });
 
-// ==================== MIDDLEWARE ====================
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ');
-
-  if (!token) {
-    return res.status(401).json({ error: "Access token required", code: "NO_TOKEN" });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET || 'default-secret', (err, user) => {
-    if (err) {
-      console.log(`[AUTH] Token verification failed: ${err.message}`);
-      return res.status(403).json({ error: "Invalid or expired token", code: "INVALID_TOKEN" });
-    }
-    req.user = user;
-    next();
-  });
-}
-
-// ==================== PUBLIC ENDPOINTS ====================
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
 
 app.get("/", (req, res) => {
   res.send(`
@@ -99,7 +75,7 @@ app.get("/", (req, res) => {
         </style>
       </head>
       <body>
-        <h1>🔐 Secure Authentication System</h1>
+        <h1> Secure Authentication System</h1>
 
         <div class="section">
           <h2>Step 1: Register New User</h2>
@@ -129,12 +105,6 @@ app.get("/", (req, res) => {
           <pre id="loginResult"></pre>
         </div>
 
-        <div class="section">
-          <h2>Step 4: Access Protected Resource</h2>
-          <input id="tokenInput" placeholder="Paste JWT token here" style="margin-bottom: 10px;" />
-          <button onclick="testProtected()">Test Protected Endpoint</button>
-          <pre id="protectedResult"></pre>
-        </div>
 
         <script>
           document.getElementById('registerForm').addEventListener('submit', async (e) => {
@@ -170,30 +140,10 @@ app.get("/", (req, res) => {
               const json = await res.json();
               document.getElementById('loginResult').textContent = JSON.stringify(json, null, 2);
               
-              if (json.token) {
-                localStorage.setItem('authToken', json.token);
-                document.getElementById('tokenInput').value = json.token;
-              }
             } catch (err) {
               document.getElementById('loginResult').textContent = 'Error: ' + err.message;
             }
           });
-
-          function testProtected() {
-            const token = document.getElementById('tokenInput').value;
-            if (!token) {
-              document.getElementById('protectedResult').textContent = 'Please paste token first';
-              return;
-            }
-            fetch('/profile', {
-              method: 'GET',
-              headers: { 'Authorization': 'Bearer ' + token }
-            }).then(r => r.json()).then(json => {
-              document.getElementById('protectedResult').textContent = JSON.stringify(json, null, 2);
-            }).catch(err => {
-              document.getElementById('protectedResult').textContent = 'Error: ' + err.message;
-            });
-          }
         </script>
       </body>
     </html>
@@ -307,7 +257,9 @@ app.post("/login", loginLimiter, async (req, res) => {
       });
     }
 
-    const user = result.rows;
+    const user = result.rows[0];
+    console.log("DEBUG user from DB:", user); // TEMP DEBUG
+
 
     const passwordMatch = bcrypt.compareSync(password, user.password_hash);
     if (!passwordMatch) {
@@ -341,57 +293,15 @@ app.post("/login", loginLimiter, async (req, res) => {
       });
     }
 
-    const token = jwt.sign(
-      {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        iat: Math.floor(Date.now() / 1000),
-      },
-      process.env.JWT_SECRET || 'default-secret',
-      { expiresIn: '15m' }
-    );
-
     console.log(`[LOGIN] SUCCESS: username=${username} id=${user.id}`);
 
     return res.status(200).json({
       message: "Login successful with 2FA verified",
-      token: token,
-      user: { id: user.id, username: user.username, role: user.role },
-      expiresIn: '15 minutes'
+      user: { id: user.id, username: user.username, role: user.role }
     });
 
   } catch (err) {
     console.error("[LOGIN] ERROR:", err);
-    return res.status(500).json({ 
-      error: "Internal server error", 
-      code: "SERVER_ERROR" 
-    });
-  }
-});
-
-// ==================== PROTECTED ENDPOINTS ====================
-app.get("/profile", authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT id, username, role FROM users WHERE id = $1",
-      [req.user.id]
-    );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const user = result.rows;
-    console.log(`[PROFILE] Accessed by: username=${user.username}`);
-
-    return res.status(200).json({
-      message: "User profile retrieved successfully",
-      user: user
-    });
-
-  } catch (err) {
-    console.error("[PROFILE] ERROR:", err);
     return res.status(500).json({ 
       error: "Internal server error", 
       code: "SERVER_ERROR" 

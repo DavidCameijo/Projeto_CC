@@ -17,6 +17,8 @@ services:
       - "3000:3000"
     env_file:
       - .env
+    volumes:
+      - ./.env:/app/.env:ro
     tty: true
     depends_on:
       db01:
@@ -28,9 +30,9 @@ services:
     networks:
       - internal-net
     environment:
-      POSTGRES_USER: ${DB_USER}           # ← Changed to DB_USER
-      POSTGRES_PASSWORD: ${DB_PASSWORD}   # ← Changed to DB_PASSWORD
-      POSTGRES_DB: ${DB_NAME}             # ← Changed to DB_NAME
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}   
+      POSTGRES_DB: ${DB_NAME}            
     volumes:
       - ./DB/init-users.sql:/docker-entrypoint-initdb.d/init-users.sql
     ports:
