@@ -43,6 +43,7 @@ services:
       - ./DB/init-users.sql:/docker-entrypoint-initdb.d/init-users.sql
       - ./postgres/tls:/var/lib/postgresql/tls
       - ./DB/postgres-entrypoint.sh:/usr/local/bin/postgres-entrypoint.sh:ro
+      - ./DB/config-integrity.sh:/usr/local/bin/config-integrity.sh:ro
     ports:
       - "5432:5432"
     tty: true

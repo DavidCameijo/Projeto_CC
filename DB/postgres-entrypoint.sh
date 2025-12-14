@@ -30,4 +30,6 @@ if [ -f "$PG_HBA" ] && ! grep -q "cert" "$PG_HBA"; then
 fi
 
 echo "Starting PostgreSQL..."
+echo "Note: Run integrity check after startup with:"
+echo "  docker exec db01 /usr/local/bin/config-integrity.sh verify"
 exec docker-entrypoint.sh "$@"
