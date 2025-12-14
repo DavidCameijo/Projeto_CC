@@ -1,3 +1,20 @@
+-- Create additional databases
+CREATE DATABASE "admin";
+CREATE DATABASE "Projeto_CC";
+
+-- Create custom roles/users if they don't exist
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_user WHERE usename = 'admin') THEN
+    CREATE ROLE admin WITH LOGIN PASSWORD 'admin123';
+  END IF;
+END
+$$;
+
+-- Grant privileges
+ALTER ROLE admin WITH SUPERUSER CREATEDB CREATEROLE;
+
+-- Create application tables in the main database
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
@@ -9,7 +26,22 @@ CREATE TABLE IF NOT EXISTS users (
 
 INSERT INTO users (username, password_hash, role,two_factor_enabled) VALUES
   ('admin', '$2a$10$/JKoT9mRo00QZgBlunx4DeT/PWdDFPj/KoM0sQaA6Gl4NiH0kYq6G', 'admin',FALSE),
-  ('user', '$2a$10$8t7druW5fOHrlNYz39OLT..Nfx2xTG38oWs7WAkgYWe8MlrCAWgsC', 'reader',FALSE)
-
-  
+  ('user', '$2a$10$8t7druW5fOHrlNYz39OLT..Nfx2xTG38oWs7WAkgYWe8MlrCAWgsC', 'read',FALSE)
 ON CONFLICT (username) DO NOTHING;
+
+-- Data table for RBAC demonstration (used by /data endpoints)
+CREATE TABLE IF NOT EXISTS data (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Sample data
+INSERT INTO data (title, content, created_by) VALUES
+  ('Welcome to the System', 'This is a sample data entry. All users can read this.', 'admin'),
+  ('Assignment 2 Completed', 'Full infrastructure with TLS, mTLS, firewall, SSH, and RBAC.', 'admin'),
+  ('Security Update', 'New security policies have been implemented.', 'admin')
+ON CONFLICT DO NOTHING;

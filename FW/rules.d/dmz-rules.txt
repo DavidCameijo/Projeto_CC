@@ -1,0 +1,7 @@
+# DMZ Zone Rules
+# nginx01 is in DMZ and should only access web01 backend
+
+# Allow nginx to web01 API (HTTPS)
+# Source: nginx01 (DMZ)
+# Dest: web01:3000 (Internal)
+# Protocol: TCP/3000

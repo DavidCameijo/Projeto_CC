@@ -1,0 +1,56 @@
+% Simplified Firewall section focusing on essentials
+
+\section{Firewall Service (fw01)}
+
+\subsection{Overview}
+
+\textbf{Stack:} nftables with default \textbf{DROP} and a minimal allowlist between DMZ and internal.
+
+\subsection{Security Features}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{10cm}|}
+\hline
+\textbf{Feature} & \textbf{Implementation} \\
+\hline
+Default DENY & DROP base policy; only required flows allowed \\
+\hline
+Allows & 22 (admin), 53 (DNS), 443 (HTTPS), 3000 (web01), 5432 (PostgreSQL) \\
+\hline
+CA Isolation & Block 172.19.0.2 with log prefix \texttt{[FW-DENY-CA-ACCESS]} \\
+\hline
+Integrity & \texttt{integrity-check.sh} verifies \texttt{nftables.conf} and \texttt{entrypoint.sh} \\
+\hline
+\end{tabular}
+\caption{Firewall features (concise)}
+\end{table}
+
+\subsection{Policy Summary}
+
+- Default \textbf{DROP}; allow client→nginx:443, nginx→web01:3000, web01→db01:5432, SSH:22.
+- CA (172.19.0.2) explicitly blocked and logged.
+
+\subsection{Interfaces and IPs}
+
+- DMZ: fw01=172.18.0.2, nginx=172.18.0.4, web01=172.18.0.3
+- Internal: fw01=172.19.0.4, db01=172.19.0.3, ca01=172.19.0.2, web01=172.19.0.5
+- Note: Static IPs pinned via docker-compose IPAM to keep rules stable.
+
+\subsection{Allowed Flows}
+
+- nginx→web01:3000 (internal HTTPS proxy path)
+- web01→db01:5432 (PostgreSQL with mTLS)
+- Internal→DNS:53 (UDP/TCP)
+- ANY→fw01:22 (admin SSH)
+- External HTTPS terminates at nginx:443 (DMZ), then proxied inside.
+
+\subsection{Operations}
+
+- List rules: \texttt{docker exec fw01 nft list ruleset}
+- Verify CA block: \texttt{docker exec fw01 nft list ruleset | grep "172.19.0.2"}
+- Integrity: \texttt{docker exec fw01 /usr/local/bin/integrity-check.sh verify}
+
+\subsection{Logging}
+
+- Drops logged with prefixes (e.g., \texttt{[FW-DENY-CA-ACCESS]}). Rule counters visible via \texttt{nft list ruleset -a}.

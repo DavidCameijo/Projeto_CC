@@ -1,0 +1,58 @@
+
+
+\chapter{Service Implementation}
+
+\section{Public Key Infrastructure (PKI)}
+
+\subsection{Architecture Overview}
+
+\textbf{Hierarchy:} Two-tier PKI with Root CA (self-signed, offline) and Intermediate CA (signs all certificates). \textbf{Algorithms:} RSA 4096-bit keys, SHA-256 signatures. \textbf{Validity:} Root CA (10 years), Intermediate CA (5 years), server/client certificates (1 year).
+
+\subsection{Implementation}
+
+\textbf{Directory Structure:} \texttt{PKI/root-ca/} and \texttt{PKI/intermediate-ca/} with \texttt{private/} (600 permissions), \texttt{certs/}, \texttt{crl/}, \texttt{checksums/}, \texttt{scripts/}.
+
+\textbf{Automated Scripts:}
+\begin{itemize}
+    \item \texttt{init-ca.sh}: Initialize CA databases (index.txt, serial)
+    \item \texttt{generate-root-ca.sh}: Create Root CA (RSA 4096, SHA-256, 10-year validity)
+    \item \texttt{generate-intermediate-ca.sh}: Create Intermediate CA signed by Root CA
+    \item \texttt{issue-server-cert.sh <hostname>}: Issue server certificates with \texttt{extendedKeyUsage = serverAuth}
+    \item \texttt{issue-client-cert.sh <name>}: Issue client certificates with \texttt{extendedKeyUsage = clientAuth}
+    \item \texttt{revoke-cert.sh <cert>}: Revoke certificates and update CRL
+    \item \texttt{verify-integrity.sh}: Verify SHA-256 checksums of critical files
+\end{itemize}
+
+\textbf{Security Features:}
+\begin{itemize}
+    \item Dedicated user \texttt{ca} with restricted permissions (private keys 600, directories 700)
+    \item SHA-256 checksums for all critical files (keys, configs, database)
+    \item CRL generation with 30-day validity (PEM and DER formats)
+    \item Certificate chain files included for easy deployment
+\end{itemize}
+
+\subsection{Issued Certificates}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Certificate} & \textbf{Serial} & \textbf{Extended Key Usage} \\
+\hline
+web01.org.local & 1001 & serverAuth (TLS server) \\
+web02.org.local & 1004 & serverAuth (TLS server) \\
+db01.org.local & 1002 & serverAuth (TLS server) \\
+nginx01.org.local & 1005 & serverAuth (TLS server) \\
+web02-client & 1006 & clientAuth (mTLS client) \\
+\hline
+\end{tabular}
+\caption{Issued certificates for infrastructure services}
+\end{table}
+
+\textbf{Certificate Properties:} RSA 4096-bit, SHA-256 signature, 1-year validity, Subject CN and SAN with hostname, Key Usage (Digital Signature, Key Encipherment), certificate chain files included.
+
+\subsection{Revocation System}
+
+\textbf{CRL Management:} \texttt{revoke-cert.sh} updates database, \texttt{generate-crl.sh} creates CRL (30-day validity, PEM/DER formats), \texttt{verify-revocation.sh} checks revocation status.
+
+\textbf{Test Verification:} Certificate \texttt{test-revoke.org.local} successfully revoked, \texttt{openssl verify -crl\_check} returned \texttt{error 23: certificate revoked}, confirming functional revocation system (Assignment 2 PKI lifecycle requirement).

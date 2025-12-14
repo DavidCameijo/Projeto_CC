@@ -1,0 +1,117 @@
+% Insert this content into Section 4.2 (Public Web Service)
+
+\section{Public Web Service (web01)}
+
+\subsection{Implementation Overview}
+
+\textbf{Technology Stack:} Node.js 18 (Alpine Linux), Express.js framework, deployed as Docker container with dual-homed networking (DMZ 172.18.0.3 + Internal 172.19.0.5).
+
+\subsection{Security Features}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{10cm}|}
+\hline
+\textbf{Feature} & \textbf{Implementation} \\
+\hline
+2FA & TOTP (RFC 6238) with speakeasy, QR code generation, Google Authenticator compatible \\
+\hline
+JWT Authentication & HMAC-SHA256 signed tokens, 24-hour expiry, embedded role for RBAC \\
+\hline
+RBAC & Three roles: admin (read/write), readwrite (read/write), read (read only) enforced on /data endpoints \\
+\hline
+Fail2ban & In-memory tracking, 2 failed attempts \Rightarrow 15min ban per username \\
+\hline
+TLS (Server) & Port 3000, web01.org.local certificate (RSA 4096), TLS 1.3, receives from nginx \\
+\hline
+mTLS (Client) & Client certificate (web02-client) for db01 authentication, extendedKeyUsage = clientAuth \\
+\hline
+Password Hashing & bcrypt with cost=10 for database storage \\
+\hline
+Integrity & SHA-256 checksums via config-integrity.sh; startup logs integrity hash for .env \\
+\hline
+\end{tabular}
+\caption{Web service security features (Assignment 2 Table 1 compliance)}
+\end{table}
+
+\subsection{Security Policies Implementation}
+
+\subsubsection{Two-Factor Authentication (2FA)}
+
+The service implements TOTP-based 2FA for user registration:
+
+\textbf{Registration Flow}:
+\begin{enumerate}
+    \item User submits username and password to /register endpoint
+    \item Password hashed with bcrypt (10 salt rounds)
+    \item TOTP secret generated using speakeasy library
+    \item QR code generated for secret (otpauth:// URI)
+    \item User data stored in PostgreSQL with encrypted connection
+    \item Response includes QR code for authenticator app setup
+\end{enumerate}
+
+\textbf{Implementation}:
+\begin{verbatim}
+const secret = speakeasy.generateSecret({
+  name: `SecureApp (${username})`,
+  length: 32
+});
+const qrCode = await QRCode.toDataURL(secret.otpauth_url);
+// Store secret.base32 in database
+\end{verbatim}
+
+\subsubsection{Traffic Encryption}
+
+All traffic to/from web01 is encrypted:
+\begin{itemize}
+    \item \textbf{Client → Nginx}: HTTPS/TLS 1.3 (port 443)
+    \item \textbf{Nginx → Web01}: HTTPS/TLS 1.3 (port 3000) with certificate verification
+    \item \textbf{Web01 → Database}: PostgreSQL TLS with mTLS client authentication (port 5432)
+\end{itemize}
+
+\subsubsection{Configuration File Integrity}
+
+  extbf{Decision}: Enforce configuration integrity for server.js and package.json.
+
+  extbf{Method}: SHA-256 baseline stored in /app/config-checksums.sha256 and verified by config-integrity.sh at container start (evidence: checksum pass). .env integrity hash is logged with HMAC-SHA256.
+
+  extbf{Status}: Implemented and verified.
+
+\subsection{API Endpoints}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|p{7cm}|}
+\hline
+	extbf{Endpoint} & \textbf{Method} & \textbf{Description / Auth} \\
+\hline
+/health & GET & Health check (no auth) \\
+/register & POST & User registration + TOTP secret/QR (rate-limited) \\
+/login & POST & Username/password + TOTP (if enabled); issues JWT with role \\
+/data & GET & List data (auth required; all roles read) \\
+/data & POST & Create data (auth; roles readwrite/admin) \\
+/data/:id & PUT & Update data (auth; roles readwrite/admin) \\
+\hline
+\end{tabular}
+\caption{Web Service API Endpoints and authorization}
+\end{table}
+
+\subsection{Implementation Decisions}
+
+\subsubsection{Dual Network Connectivity}
+
+\textbf{Decision}: web01 connected to both DMZ and internal networks.
+
+\textbf{Justification}: Receives public traffic from nginx (DMZ) while accessing database (internal network). Firewall rules restrict traffic flows: only nginx→web01:3000 and web01→db01:5432 allowed.
+
+\subsubsection{Client Certificate Authentication}
+
+\textbf{Decision}: Use mTLS with client certificates for database connections.
+
+\textbf{Justification}: Provides stronger authentication than password-only. Certificate must have extendedKeyUsage = clientAuth. PostgreSQL configured with clientcert=verify-ca in pg\_hba.conf.
+
+\subsubsection{Static IP Assignment}
+
+\textbf{Decision}: Assign static IPs to web01 (172.18.0.3 in DMZ, 172.19.0.5 in internal).
+
+\textbf{Justification}: Firewall rules reference specific IP addresses. Dynamic IPs would break firewall rules on container restart. Docker IPAM used to ensure IP persistence.
