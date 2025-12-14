@@ -1,0 +1,421 @@
+% Chapter 2: Implementation Plan and Architecture
+% Assignment 2 - Communications and Cybersecurity
+
+\section{Implementation Plan and Architecture}
+
+\subsection{(a) Final Plan to Instantiate Services}
+
+\subsubsection{Deployed Services}
+
+We implemented six services fulfilling Assignment 2 requirements:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|p{6cm}|}
+\hline
+\textbf{Service} & \textbf{Technology} & \textbf{Purpose} \\
+\hline
+PKI (ca01) & OpenSSL 3.0 & Certificate issuance, CRL management \\
+\hline
+Web Server (web01) & Node.js + Express & Public web service with 2FA \\
+\hline
+Database (db01) & PostgreSQL 15 & Data storage with mTLS \\
+\hline
+SSH Server (ssh01) & OpenSSH 9.x & Remote access with certificates \\
+\hline
+Firewall (fw01) & nftables & Traffic filtering, default DENY \\
+\hline
+Reverse Proxy (nginx01) & Nginx 1.24 & HTTPS termination \\
+\hline
+\end{tabular}
+\caption{Implemented services and technologies}
+\end{table}
+
+\subsubsection{Deployment Steps}
+
+The deployment follows a dependency-driven sequence:
+
+\begin{enumerate}
+    \item \textbf{Phase 1 - Network Setup}: Create DMZ (172.18.0.0/16) and Internal (172.19.0.0/16) networks with static IP assignments
+    
+    \item \textbf{Phase 2 - PKI Initialization}: Generate Root CA → Intermediate CA → Server certificates → Client certificates → SSH CA
+    
+    \item \textbf{Phase 3 - Service Deployment}: 
+    \begin{verbatim}
+    docker-compose up -d db01 web01 fw01 nginx01
+    cd SSH01 && sudo ./setup-ssh-vm.sh
+    \end{verbatim}
+    
+    \item \textbf{Phase 4 - Verification}: Test connectivity, certificate validation, firewall rules, and configuration integrity
+\end{enumerate}
+
+\subsubsection{Changes from Assignment 1}
+
+Key modifications for Assignment 2:
+
+\begin{enumerate}
+    \item \textbf{Network Segmentation}: Added DMZ (172.18.x) and Internal (172.19.x) networks with static IPs for firewall rules
+    
+    \item \textbf{SSH Deployment}: Moved from Docker to Kali VM for realistic remote access testing
+    
+    \item \textbf{CA Isolation}: Firewall blocks all ca01 traffic (internal only, certificate issuance completed pre-deployment)
+    
+    \item \textbf{Auth \& AuthZ}: Added JWT authentication, fail2ban (2 failures=15min), RBAC (admin/read/readwrite)
+    
+    \item \textbf{Integrity}: SHA-256 checksums with automatic (fw01, web01) and manual (db01, ssh01, ca01) verification
+    
+    \item \textbf{2FA}: TOTP-based with Google Authenticator (enabled for new users, disabled for admin)
+\end{enumerate}
+
+\subsection{(b) Scenario Setup Diagram}
+
+This section provides diagrams illustrating service deployment and network architecture.
+
+\subsubsection{Architecture Diagram}
+
+\begin{figure}[h]
+\centering
+\begin{verbatim}
+                    INTERNET
+                        |
+                   [Port 443]
+                        |
+    ┌───────────────────┴────────────────────┐
+    │         DMZ Network (172.18.0.0/16)    │
+    │                                         │
+    │   ┌──────────┐         ┌──────────┐   │
+    │   │ nginx01  │────────>│  web01   │   │
+    │   │.18.0.4   │  :3000  │.18.0.3   │   │
+    │   │(HTTPS)   │         │(HTTPS)   │   │
+    │   └──────────┘         └────┬─────┘   │
+    │        │                    │          │
+    │        └──────┬─────────────┘          │
+    │               │                        │
+    │          ┌────┴─────┐                  │
+    │          │   fw01   │                  │
+    │          │.18.0.2   │                  │
+    │          │.19.0.4   │                  │
+    │          │(nftables)│                  │
+    │          └────┬─────┘                  │
+    └───────────────┼────────────────────────┘
+                    │
+    ┌───────────────┴────────────────────────┐
+    │   Internal Network (172.19.0.0/16)     │
+    │                                         │
+    │   ┌──────────┐         ┌──────────┐   │
+    │   │  web01   │────────>│  db01    │   │
+    │   │.19.0.5   │  :5432  │.19.0.3   │   │
+    │   │(mTLS)    │  mTLS   │(PostgreSQL)│  │
+    │   └──────────┘         └──────────┘   │
+    │                                         │
+    │        ┌──────────┐                    │
+    │        │  ca01    │ (BLOCKED by FW)    │
+    │        │.19.0.2   │                    │
+    │        │(PKI)     │                    │
+    │        └──────────┘                    │
+    └─────────────────────────────────────────┘
+
+                   ┌──────────┐
+                   │ ssh01    │ (Kali VM)
+                   │(SSH CA)  │ 192.168.x.x
+                   │:22       │
+                   └──────────┘
+\end{verbatim}
+\caption{Network architecture with DMZ and Internal segmentation}
+\end{figure}
+
+\textbf{Legend:}
+\begin{itemize}
+    \item Solid lines (──) indicate allowed network connections
+    \item Arrow direction (─>) shows traffic flow
+    \item Port numbers indicate service endpoints
+    \item IP addresses show static assignments
+\end{itemize}
+
+\subsubsection{Infrastructure Description}
+
+\paragraph{Network Segmentation}
+
+The infrastructure implements a two-tier network segmentation model:
+
+\begin{enumerate}
+    \item \textbf{DMZ Network (172.18.0.0/16)}
+    \begin{itemize}
+        \item Purpose: Hosts publicly accessible services
+        \item Gateway: 172.18.0.1
+        \item Services: nginx01 (reverse proxy), web01 (dual-homed), fw01 (dual-homed)
+        \item External Access: Port 443 exposed to internet
+        \item Security: Firewall rules strictly control traffic flow
+    \end{itemize}
+    
+    \item \textbf{Internal Network (172.19.0.0/16)}
+    \begin{itemize}
+        \item Purpose: Hosts backend services and sensitive data
+        \item Gateway: 172.19.0.1
+        \item Services: db01 (database), ca01 (PKI), web01 (dual-homed), fw01 (dual-homed)
+        \item Isolation: No direct external access; CA completely blocked
+        \item Security: mTLS required for all connections
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{(c) Data Flows and Service Inventory}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|l|l|p{4.5cm}|}
+\hline
+\textbf{Flow} & \textbf{Protocol} & \textbf{Port} & \textbf{Encryption} & \textbf{Purpose} \\
+\hline
+Client→nginx01 & HTTPS & 443 & TLS 1.3 & User web access \\
+\hline
+nginx01→web01 & HTTPS & 3000 & TLS 1.3 & Reverse proxy \\
+\hline
+web01→db01 & PostgreSQL & 5432 & TLS + mTLS & Database queries \\
+\hline
+Admin→ssh01 & SSH & 22 & Ed25519 & Remote access \\
+\hline
+ANY→ca01 & - & - & BLOCKED & CA isolation \\
+\hline
+\end{tabular}
+\caption{Data flows with ports, protocols, and encryption}
+\end{table}
+
+\textbf{Network Segmentation:} DMZ (172.18.x): nginx01 (.4), web01 (.3), fw01 (.2); Internal (172.19.x): ca01 (.2), db01 (.3), fw01 (.4), web01 (.5). Firewall enforces default DENY with specific allow rules.
+
+\subsubsection{Virtualization Model}
+
+\textbf{Container Orchestration:} Docker 24.x+ with Docker Compose for service orchestration, custom bridge networks with static IPs, persistent volumes for database/certificates/logs.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Service} & \textbf{Base Image} & \textbf{Rationale} \\
+\hline
+nginx01, web01, db01 & Alpine Linux 3.x & Minimal (5MB), security-focused \\
+\hline
+fw01, ca01 & Debian 12 & Full-featured (nftables, OpenSSL) \\
+\hline
+ssh01 & Kali Linux 2024.x & Pre-configured SSH server \\
+\hline
+\end{tabular}
+\caption{Operating systems and deployment rationale}
+\end{table}
+
+\textbf{Security Boundaries:} Network isolation (custom Docker networks), filesystem isolation (minimal volume mounts, read-only where possible), process isolation (minimal privileges), certificate-based trust (no shared secrets).
+
+\section{Policies and Cryptography}
+
+\subsection{(d) Policy Implementation}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|p{6.5cm}|}
+\hline
+\textbf{Service} & \textbf{Policy} & \textbf{Implementation} \\
+\hline
+Web Server & 2FA & TOTP with speakeasy, Google Authenticator \\
+Web Server & Integrity & SHA-256 checksums (server.js, package.json) \\
+Web Server & Encryption & HTTPS/TLS 1.3 via nginx reverse proxy \\
+\hline
+Firewall & Default DENY & nftables policy drop, specific allow rules \\
+Firewall & Integrity & SHA-256 on nftables.conf, entrypoint.sh \\
+\hline
+Database & RBAC & JWT roles (admin=write, read=read only) \\
+Database & Integrity & SHA-256 on postgresql.conf, pg\_hba.conf \\
+Database & Encryption & PostgreSQL TLS + mTLS with client certs \\
+\hline
+SSH & Certificates & Ed25519 SSH CA, user certificates \\
+SSH & Integrity & SHA-256 on sshd\_config, ca.pub \\
+SSH & Sessions & MaxSessions 5 in sshd\_config \\
+\hline
+PKI & Secure Access & Directory permissions 700, restricted access \\
+PKI & Integrity & SHA-256 on CA database and configs \\
+PKI & Lifecycle & Issue, verify, revoke with CRL \\
+\hline
+SIEM & Fail2ban & 2 failures = 15min ban, in-memory tracking \\
+SIEM & Integrity & SHA-256 on server.js \\
+SIEM & Encryption & HTTPS/TLS 1.3 for admin access \\
+\hline
+\end{tabular}
+\caption{Policy implementation per service (Assignment 2 Table 1)}
+\end{table}
+
+\subsection{(e) Cryptographic Mechanisms}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|p{6.5cm}|}
+\hline
+\textbf{Mechanism} & \textbf{Algorithm} & \textbf{Usage} \\
+\hline
+TLS & TLS 1.3 & All HTTPS connections (client→nginx, nginx→web01) \\
+\hline
+Key Exchange & ECDHE & TLS handshake with perfect forward secrecy \\
+\hline
+Symmetric Encryption & AES-256-GCM & Bulk data encryption in TLS sessions \\
+\hline
+Hash (TLS) & SHA-384 & TLS 1.3 HMAC and cipher suites \\
+\hline
+Hash (Integrity) & SHA-256 & Configuration file checksums \\
+\hline
+Hash (Password) & bcrypt (cost=10) & User password storage in database \\
+\hline
+Certificates (TLS) & RSA 4096-bit & X.509 server/client certificates \\
+\hline
+Certificates (SSH) & Ed25519 & SSH user certificate authentication \\
+\hline
+2FA & TOTP (RFC 6238) & Time-based one-time passwords \\
+\hline
+JWT & HMAC-SHA256 & Token signing for session management \\
+\hline
+Database Auth & SCRAM-SHA-256 & PostgreSQL password authentication \\
+\hline
+\end{tabular}
+\caption{Employed cryptographic mechanisms}
+\end{table}
+
+\section{Testing and Evaluation}
+
+\subsection{(f) Test Plan and Results}
+
+\subsubsection{Authentication Testing}
+
+\textbf{Test 1: Admin login without 2FA}
+\begin{verbatim}
+curl -k -X POST https://localhost/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"adminpassword"}'
+\end{verbatim}
+
+\textbf{Result:} SUCCESS - Received JWT token with role='admin'
+\begin{verbatim}
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+ "user":{"username":"admin","role":"admin"}}
+\end{verbatim}
+
+\subsubsection{Authorization Testing (RBAC)}
+
+\textbf{Test 2: Admin write access}
+\begin{verbatim}
+curl -k -X POST https://localhost/data \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test","content":"Admin post"}'
+\end{verbatim}
+
+\textbf{Result:} SUCCESS - Data created
+\begin{verbatim}
+{"id":5,"title":"Test","content":"Admin post","created_by":"admin"}
+\end{verbatim}
+
+\textbf{Test 3: User write access (should fail)}
+\begin{verbatim}
+curl -k -X POST https://localhost/data \
+  -H "Authorization: Bearer <user-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test","content":"User post"}'
+\end{verbatim}
+
+\textbf{Result:} SUCCESS (403 as expected) - Permission denied
+\begin{verbatim}
+{"error":"Permission denied. READ-ONLY access."}
+\end{verbatim}
+
+\subsubsection{Fail2ban Testing}
+
+\textbf{Test 4: Multiple failed login attempts}
+\begin{verbatim}
+# Attempt 1
+curl -k -X POST https://localhost/login \
+  -d '{"username":"admin","password":"wrong"}'
+# Response: {"error":"Invalid credentials","remainingAttempts":2}
+
+# Attempt 2
+curl -k -X POST https://localhost/login \
+  -d '{"username":"admin","password":"wrong"}'
+# Response: {"error":"Invalid credentials","remainingAttempts":1}
+
+# Attempt 3
+curl -k -X POST https://localhost/login \
+  -d '{"username":"admin","password":"wrong"}'
+# Response: {"error":"Account locked after 2 failed attempts..."}
+\end{verbatim}
+
+\textbf{Result:} SUCCESS - Account locked for 15 minutes after 2 failed attempts
+
+\subsubsection{Firewall Testing}
+
+\textbf{Test 5: CA isolation}
+\begin{verbatim}
+docker exec fw01 nft list ruleset | grep -A 5 "CA-ISOLATION"
+\end{verbatim}
+
+\textbf{Result:} SUCCESS - Rules block all traffic to 172.19.0.2 (ca01)
+\begin{verbatim}
+ip daddr 172.19.0.2 log prefix "[FW-DENY-CA-ACCESS]" drop
+\end{verbatim}
+
+\subsubsection{SSH Certificate Testing}
+
+\textbf{Test 6: SSH connection with certificate}
+\begin{verbatim}
+ssh -i PKI/ssh-ca/user-certs/admin-key admin@192.168.x.x
+\end{verbatim}
+
+\textbf{Result:} SUCCESS - Connected using certificate authentication (no password prompt)
+
+\subsubsection{Configuration Integrity Testing}
+
+\textbf{Test 7: Integrity verification}
+\begin{verbatim}
+docker exec web01 /usr/local/bin/config-integrity.sh verify
+docker exec fw01 /usr/local/bin/integrity-check.sh verify
+\end{verbatim}
+
+\textbf{Result:} SUCCESS - All checksums matched baseline
+
+\subsection{(g) Performance Measurement}
+
+\textbf{Measurement Tool:} docker stats (resource utilization), curl -w (response time)
+
+\subsubsection{Resource Utilization}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|r|r|}
+\hline
+\textbf{Service} & \textbf{CPU \%} & \textbf{Memory (MB)} \\
+\hline
+nginx01 & 0.1\% & 8 MB \\
+web01 & 0.5\% & 45 MB \\
+db01 & 0.3\% & 25 MB \\
+fw01 & 0.0\% & 3 MB \\
+\hline
+\textbf{Total} & \textbf{0.9\%} & \textbf{81 MB} \\
+\hline
+\end{tabular}
+\caption{Resource usage under idle conditions}
+\end{table}
+
+\subsubsection{Response Time Analysis}
+
+\begin{verbatim}
+# Measure HTTPS response time
+for i in {1..10}; do
+  curl -k -w "%{time_total}\n" -o /dev/null -s https://localhost/health
+done | awk '{sum+=$1} END {print "Average:",sum/NR*1000,"ms"}'
+\end{verbatim}
+
+\textbf{Results:}
+\begin{itemize}
+    \item Average response time: 18ms
+    \item TLS handshake overhead: ~3ms (compared to HTTP baseline)
+    \item Impact: +20\% latency for encryption
+\end{itemize}
+
+\subsubsection{Conclusion}
+
+Security measures introduce minimal performance overhead. TLS 1.3 adds approximately 20\% latency but provides essential end-to-end encryption. Resource usage is minimal (81 MB total memory, <1\% CPU), making the infrastructure suitable for production deployment. The fail2ban mechanism operates in-memory with negligible performance impact.
+
+

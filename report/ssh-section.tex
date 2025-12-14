@@ -1,0 +1,76 @@
+% Insert this content into Section 4.x (SSH Service)
+
+\section{SSH Service}
+
+\subsection{Implementation Overview}
+
+\textbf{Technology Stack:} OpenSSH server configured on the VM with certificate-based user authentication, aligned to an internal-only access policy.
+
+\subsection{Security Features}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|p{10cm}|}
+\hline
+\textbf{Feature} & \textbf{Implementation} \\
+\hline
+Certificate Auth & User keys signed by SSH CA; server trusts CA public key (\texttt{ca.pub}) \\
+\hline
+Passwordless Login & \texttt{admin-key} + \texttt{admin-key-cert.pub} used; passwords disabled for admin \\
+\hline
+Policy Enforcement & Login requires valid cert; attempts without cert fail with \emph{Permission denied (publickey)} \\
+\hline
+Session Limits & \texttt{MaxSessions 5} in \texttt{/etc/ssh/sshd\_config} \\
+\hline
+Integrity & \texttt{verify-ssh-integrity.sh} validates checksums for \texttt{sshd\_config} and \texttt{ca.pub} \\
+\hline
+Firewall & Only internal admin source permitted; DMZ access blocked by firewall policy \\
+\hline
+\end{tabular}
+\caption{SSH security features (Assignment 2 Table 1 compliance)}
+\end{table}
+
+\subsection{Security Policies Implementation}
+
+\subsubsection{Certificate Authentication}
+
+\textbf{Server Trust:} \texttt{TrustedUserCAKeys} points to the SSH CA public key; user keys must be signed.
+
+\textbf{User Certs:} \texttt{admin-key} signed to \texttt{admin-key-cert.pub}; login succeeds without password when valid cert presented.
+
+\textbf{Negative Test:} Without cert, login fails: \emph{Permission denied (publickey)} (evidence figure included).
+
+\subsubsection{Configuration Integrity}
+
+\textbf{Decision:} Enforce integrity verification of SSH server configuration and CA key.
+
+\textbf{Method:} \texttt{verify-ssh-integrity.sh} checks SHA-256 checksums; evidence shows pass.
+
+\subsection{Operational Commands ("API")}
+
+\begin{itemize}
+    \item Certificate login: \texttt{ssh -i PKI/ssh-ca/user-certs/admin-key admin@<host>}
+    \item Negative test: \texttt{ssh admin@<host>} \Rightarrow \emph{Permission denied (publickey)}
+    \item Integrity check: \texttt{sudo verify-ssh-integrity.sh}
+    \item Config inspection: \texttt{grep MaxSessions /etc/ssh/sshd\_config}
+\end{itemize}
+
+\subsection{Implementation Decisions}
+
+\subsubsection{Enforce Cert-only Auth}
+
+\textbf{Decision:} Disable password login for admin; require signed user certificates.
+
+\textbf{Justification:} Reduces credential attack surface; relies on cryptographic identity issued by SSH CA.
+
+\subsubsection{Session Limits}
+
+\textbf{Decision:} Configure \texttt{MaxSessions 5} to cap concurrent sessions.
+
+\textbf{Justification:} Prevents resource exhaustion via excessive session multiplexing.
+
+\subsubsection{Firewall Restriction}
+
+\textbf{Decision:} Restrict SSH ingress to internal/admin sources; block DMZ.
+
+\textbf{Justification:} Aligns with least-privilege network access and reduces exposure.

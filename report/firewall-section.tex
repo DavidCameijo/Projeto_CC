@@ -1,315 +1,56 @@
-% Insert this content into Section 4.4 (Firewall Service)
+% Simplified Firewall section focusing on essentials
 
 \section{Firewall Service (fw01)}
 
-The firewall service enforces network segmentation and access control policies using nftables, implementing a default-deny security posture with explicit allow rules for required service communication.
+\subsection{Overview}
 
-\subsection{Architecture}
+\textbf{Stack:} nftables with default \textbf{DROP} and a minimal allowlist between DMZ and internal.
 
-\subsubsection{Deployment Model}
-
-The firewall is deployed as a privileged Docker container (fw01) connected to both DMZ network (172.18.0.0/16) and internal network (172.19.0.0/16) with static IP assignments: 172.18.0.2 (DMZ), 172.19.0.4 (internal). Requires NET\_ADMIN and NET\_RAW capabilities for packet filtering.
-
-\subsubsection{Technology Stack}
-
-\begin{itemize}
-    \item \textbf{Base Image}: Debian 12
-    \item \textbf{Firewall}: nftables (Linux netfilter framework)
-    \item \textbf{Table}: inet filter (handles both IPv4 and IPv6)
-    \item \textbf{Chains}: INPUT (traffic to firewall), FORWARD (traffic through firewall), OUTPUT (traffic from firewall)
-    \item \textbf{Utilities}: tcpdump (traffic analysis), openssl (certificate verification)
-\end{itemize}
-
-\subsection{Configuration and Deployment}
-
-\subsubsection{nftables Configuration}
-
-The firewall implements three chains with specific policies:
-
-\textbf{INPUT Chain} (traffic to firewall itself):
-\begin{itemize}
-    \item \textbf{Policy}: DROP (default deny)
-    \item \textbf{Allow}: Established/related connections, loopback, ICMP, SSH (port 22)
-    \item \textbf{Logging}: Dropped packets logged with prefix "[FW-INPUT-DROP]"
-\end{itemize}
-
-\textbf{FORWARD Chain} (traffic passing through firewall):
-\begin{itemize}
-    \item \textbf{Policy}: DROP (default deny)
-    \item \textbf{Allow Rules}:
-    \begin{itemize}
-        \item Established/related connections (stateful)
-        \item nginx01 (172.18.0.4) → web01 (172.18.0.3):3000 TCP (HTTPS API)
-        \item web01 (172.19.0.5) → db01 (172.19.0.3):5432 TCP (PostgreSQL mTLS)
-        \item Internal network → DNS (ports 53 UDP/TCP)
-    \end{itemize}
-    \item \textbf{Explicit Deny Rules}:
-    \begin{itemize}
-        \item DMZ (172.18.0.0/16) → db01:5432 (prevent direct database access from DMZ)
-        \item ANY → ca01 (172.19.0.2) (complete CA isolation)
-    \end{itemize}
-    \item \textbf{Logging}: All denied packets logged with specific prefixes
-\end{itemize}
-
-\textbf{OUTPUT Chain} (traffic from firewall):
-\begin{itemize}
-    \item \textbf{Policy}: ACCEPT (firewall can initiate connections)
-\end{itemize}
-
-\textbf{nftables Configuration File} (\texttt{FW/nftables.conf}):
-\begin{verbatim}
-table inet filter {
-    chain input {
-        type filter hook input priority 0; policy drop;
-        ct state established,related accept
-        iif lo accept
-        ip protocol icmp accept
-        tcp dport 22 ct state new accept
-        log prefix "[FW-INPUT-DROP] " drop
-    }
-    
-    chain forward {
-        type filter hook forward priority 0; policy drop;
-        ct state established,related accept
-        
-        # Allow nginx → web01 HTTPS API
-        ip saddr 172.18.0.4 ip daddr 172.18.0.3 tcp dport 3000 
-            ct state new accept
-        
-        # Allow web01 → db01 PostgreSQL mTLS
-        ip saddr 172.19.0.5 ip daddr 172.19.0.3 tcp dport 5432 
-            ct state new accept
-        
-        # Allow internal DNS
-        ip saddr 172.19.0.0/16 udp dport 53 ct state new accept
-        ip saddr 172.19.0.0/16 tcp dport 53 ct state new accept
-        
-        # Block DMZ → database direct access
-        ip saddr 172.18.0.0/16 ip daddr 172.19.0.3 tcp dport 5432 
-            log prefix "[FW-DENY-DMZ-DB] " drop
-        
-        # Block ALL access to CA (manual operations only)
-        ip daddr 172.19.0.2 log prefix "[FW-DENY-CA-ACCESS] " drop
-        
-        # Log all other drops
-        log prefix "[FW-DENY-FORWARD] " drop
-    }
-    
-    chain output {
-        type filter hook output priority 0; policy accept;
-    }
-}
-\end{verbatim}
-
-\subsubsection{Deployment Steps}
-
-\begin{enumerate}
-    \item \textbf{Dockerfile Creation}: Create FW/Dockerfile installing nftables, iptables, tcpdump, openssl on Debian 12 base.
-    \item \textbf{Entrypoint Script}: Create FW/entrypoint.sh to enable IP forwarding, run integrity check, load nftables rules.
-    \item \textbf{Configuration Files}: Create FW/nftables.conf with firewall rules, FW/integrity-check.sh for SHA-256 verification.
-    \item \textbf{Line Ending Conversion}: Convert all scripts from Windows (CRLF) to Unix (LF) format using dos2unix.
-    \item \textbf{Static IP Assignment}: Configure docker-compose.yml with IPAM and static IPs for all containers.
-    \item \textbf{Container Build}: Build firewall image with \texttt{docker-compose build fw01}.
-    \item \textbf{Container Start}: Launch with \texttt{docker-compose up -d fw01}.
-    \item \textbf{Rule Verification}: Check loaded rules with \texttt{docker exec fw01 nft list ruleset}.
-\end{enumerate}
-
-\subsection{Security Policies Implementation}
-
-\subsubsection{Default Deny Policy}
-
-The firewall implements a default-deny security posture as required by Assignment 2 Table 1:
-\begin{itemize}
-    \item All INPUT chain traffic dropped by default (policy drop)
-    \item All FORWARD chain traffic dropped by default (policy drop)
-    \item Only explicitly allowed traffic permitted
-    \item Specific allow rules for required services only
-\end{itemize}
-
-\subsubsection{Allowed Traffic}
-
-Traffic explicitly allowed by firewall rules (Assignment 2 Table 1 compliance):
+\subsection{Security Features}
 
 \begin{table}[H]
 \centering
-\begin{tabular}{llll}
-\toprule
-\textbf{Source} & \textbf{Destination} & \textbf{Port} & \textbf{Purpose} \\
-\midrule
-nginx01 & web01 & TCP/3000 & HTTPS API (internal) \\
-web01 & db01 & TCP/5432 & PostgreSQL mTLS \\
-Internal & ANY & TCP/53 & DNS queries \\
-Internal & ANY & UDP/53 & DNS queries \\
-ANY & fw01 & TCP/22 & SSH management \\
-\midrule
-\textbf{Blocked} & & & \\
-\midrule
-DMZ & db01 & TCP/5432 & Direct DB access denied \\
-ANY & ca01 & ALL & CA isolation \\
-\bottomrule
+\begin{tabular}{|l|p{10cm}|}
+\hline
+\textbf{Feature} & \textbf{Implementation} \\
+\hline
+Default DENY & DROP base policy; only required flows allowed \\
+\hline
+Allows & 22 (admin), 53 (DNS), 443 (HTTPS), 3000 (web01), 5432 (PostgreSQL) \\
+\hline
+CA Isolation & Block 172.19.0.2 with log prefix \texttt{[FW-DENY-CA-ACCESS]} \\
+\hline
+Integrity & \texttt{integrity-check.sh} verifies \texttt{nftables.conf} and \texttt{entrypoint.sh} \\
+\hline
 \end{tabular}
-\caption{Firewall Allow/Deny Rules}
+\caption{Firewall features (concise)}
 \end{table}
 
-\textbf{Note on Port 443}: Assignment 2 Table 1 requires allowing TCP/443 (HTTPS). In our architecture, external clients connect to nginx on port 443, which then proxies to web01 on port 3000 (internal network). The firewall rule allows nginx→web01:3000, which is the actual internal communication path. External port 443 is handled by nginx before the firewall (DMZ entry point).
+\subsection{Policy Summary}
 
-\subsubsection{Configuration Integrity Checking}
+- Default \textbf{DROP}; allow client→nginx:443, nginx→web01:3000, web01→db01:5432, SSH:22.
+- CA (172.19.0.2) explicitly blocked and logged.
 
-The firewall implements SHA-256 checksum verification for critical configuration files, as required by Assignment 2 Table 1.
+\subsection{Interfaces and IPs}
 
-\textbf{Monitored Files}:
-\begin{itemize}
-    \item \texttt{/etc/nftables.conf} (firewall rules)
-    \item \texttt{/entrypoint.sh} (startup script)
-\end{itemize}
+- DMZ: fw01=172.18.0.2, nginx=172.18.0.4, web01=172.18.0.3
+- Internal: fw01=172.19.0.4, db01=172.19.0.3, ca01=172.19.0.2, web01=172.19.0.5
+- Note: Static IPs pinned via docker-compose IPAM to keep rules stable.
 
-\textbf{Integrity Check Script} (\texttt{FW/integrity-check.sh}):
-\begin{verbatim}
-#!/bin/bash
-CHECKSUM_FILE="/etc/firewall/config-checksums.sha256"
-CONFIG_FILES=("/etc/nftables.conf" "/entrypoint.sh")
+\subsection{Allowed Flows}
 
-generate_checksums() {
-    > "$CHECKSUM_FILE"
-    for file in "${CONFIG_FILES[@]}"; do
-        sha256sum "$file" >> "$CHECKSUM_FILE"
-    done
-    chmod 600 "$CHECKSUM_FILE"
-    echo "[INTEGRITY] Checksums saved to: $CHECKSUM_FILE"
-}
+- nginx→web01:3000 (internal HTTPS proxy path)
+- web01→db01:5432 (PostgreSQL with mTLS)
+- Internal→DNS:53 (UDP/TCP)
+- ANY→fw01:22 (admin SSH)
+- External HTTPS terminates at nginx:443 (DMZ), then proxied inside.
 
-verify_checksums() {
-    if [ ! -f "$CHECKSUM_FILE" ]; then
-        echo "[INTEGRITY] No checksum file found. Generating..."
-        generate_checksums
-        return 0
-    fi
-    
-    if sha256sum -c "$CHECKSUM_FILE" --quiet 2>/dev/null; then
-        echo "[INTEGRITY] ✓ All files verified successfully"
-        return 0
-    else
-        echo "[INTEGRITY] ✗ INTEGRITY CHECK FAILED!"
-        exit 1
-    fi
-}
+\subsection{Operations}
 
-case "$1" in
-    generate) generate_checksums ;;
-    verify) verify_checksums ;;
-esac
-\end{verbatim}
+- List rules: \texttt{docker exec fw01 nft list ruleset}
+- Verify CA block: \texttt{docker exec fw01 nft list ruleset | grep "172.19.0.2"}
+- Integrity: \texttt{docker exec fw01 /usr/local/bin/integrity-check.sh verify}
 
-\textbf{Execution}: Integrity check runs automatically on firewall startup (in entrypoint.sh). On first run, generates checksums. On subsequent runs, verifies files against stored checksums. Container startup aborts if integrity check fails.
+\subsection{Logging}
 
-\subsubsection{CA Network Isolation}
-
-The Certificate Authority (ca01) is completely isolated from network access per security best practices:
-\begin{itemize}
-    \item Firewall rule blocks ALL traffic to ca01 (172.19.0.2) from any source
-    \item Logged with prefix "[FW-DENY-CA-ACCESS]"
-    \item CA operations performed manually via \texttt{docker exec ca01 bash}
-    \item Prevents network-based attacks on most critical PKI component
-\end{itemize}
-
-\textbf{Justification}: CA is the trust root of the entire infrastructure. Network isolation eliminates remote attack surface. Certificate operations (issuance, revocation) are administrative tasks that should not require network access.
-
-\subsection{Static IP Requirements}
-
-\subsubsection{Problem}
-
-Firewall rules reference specific IP addresses (e.g., "ip saddr 172.18.0.4"). Docker assigns IPs dynamically by default, which would break firewall rules on container restart.
-
-\subsubsection{Solution}
-
-Implemented static IP assignments using Docker IPAM in docker-compose.yml:
-
-\begin{verbatim}
-networks:
-  dmz-net:
-    ipam:
-      config:
-        - subnet: 172.18.0.0/16
-          gateway: 172.18.0.1
-  internal-net:
-    ipam:
-      config:
-        - subnet: 172.19.0.0/16
-          gateway: 172.19.0.1
-
-services:
-  nginx:
-    networks:
-      dmz-net:
-        ipv4_address: 172.18.0.4
-  web01:
-    networks:
-      dmz-net:
-        ipv4_address: 172.18.0.3
-      internal-net:
-        ipv4_address: 172.19.0.5
-  db01:
-    networks:
-      internal-net:
-        ipv4_address: 172.19.0.3
-  ca01:
-    networks:
-      internal-net:
-        ipv4_address: 172.19.0.2
-  fw01:
-    networks:
-      dmz-net:
-        ipv4_address: 172.18.0.2
-      internal-net:
-        ipv4_address: 172.19.0.4
-\end{verbatim}
-
-\subsection{Implementation Decisions}
-
-\subsubsection{Specific IP Rules vs. Network Ranges}
-
-\textbf{Decision}: Use specific IP addresses in firewall rules (e.g., 172.18.0.4) instead of network ranges (e.g., 172.18.0.0/16).
-
-\textbf{Justification}: More precise access control. Prevents unauthorized containers in same network from accessing services. Follows principle of least privilege. Requires static IP assignments to prevent rule breakage.
-
-\subsubsection{CA Complete Isolation}
-
-\textbf{Decision}: Block ALL network traffic to ca01, not just specific ports.
-
-\textbf{Justification}: CA is most critical security component. Should have no network attack surface. All operations performed via out-of-band access (docker exec). Exceeds Assignment 2 requirements but significantly improves security posture.
-
-\subsubsection{Stateful Firewall}
-
-\textbf{Decision}: Use connection tracking with \texttt{ct state established,related accept}.
-
-\textbf{Justification}: Allows return traffic for established connections without explicit rules. More efficient and secure than opening arbitrary return ports. Standard practice for modern firewalls.
-
-\subsection{Testing and Validation}
-
-\subsubsection{Firewall Rule Loading}
-
-Verified rules load successfully on container startup:
-\begin{verbatim}
-[FIREWALL] IP forwarding enabled
-[INTEGRITY] ✓ All configuration files verified successfully
-[FIREWALL] ✓ nftables rules loaded successfully
-[FIREWALL] Policy: Default DENY, explicit ALLOW
-\end{verbatim}
-
-\subsubsection{CA Isolation Test}
-
-Attempted connection from web01 to ca01:
-\begin{verbatim}
-$ docker exec web01 timeout 2 curl http://172.19.0.2:80
-curl: (7) Failed to connect to 172.19.0.2 port 80: 
-      Couldn't connect to server
-\end{verbatim}
-
-Result: Connection blocked by firewall as expected. CA successfully isolated.
-
-\subsubsection{Logging Verification}
-
-Firewall logs not visible in container dmesg due to Docker isolation. Packet drop logging configured but requires host kernel log access. Firewall rule counters can be checked with:
-\begin{verbatim}
-docker exec fw01 nft list ruleset -a
-\end{verbatim}
+- Drops logged with prefixes (e.g., \texttt{[FW-DENY-CA-ACCESS]}). Rule counters visible via \texttt{nft list ruleset -a}.
