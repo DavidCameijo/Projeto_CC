@@ -1,0 +1,158 @@
+% Insert this content into Section 4.2 (Public Web Service)
+
+\section{Public Web Service (web01)}
+
+The public web service provides a secure REST API with HTTPS encryption and two-factor authentication, implemented as a Node.js/Express application running in a Docker container.
+
+\subsection{Architecture}
+
+\subsubsection{Deployment Model}
+
+The service is deployed as a Docker container (web01) connected to both the DMZ network (172.18.0.0/16) and internal network (172.19.0.0/16), enabling it to receive requests from nginx (DMZ) and communicate with the database (internal network). Static IP assignments: 172.18.0.3 (DMZ), 172.19.0.5 (internal).
+
+\subsubsection{Technology Stack}
+
+\begin{itemize}
+    \item \textbf{Runtime}: Node.js 18
+    \item \textbf{Framework}: Express.js 4.x
+    \item \textbf{HTTPS Server}: Native Node.js https module with TLS 1.3
+    \item \textbf{Database Client}: node-postgres (pg) with TLS support
+    \item \textbf{2FA}: speakeasy library for TOTP generation
+    \item \textbf{Password Hashing}: bcrypt with salt rounds 10
+\end{itemize}
+
+\subsection{Configuration and Deployment}
+
+\subsubsection{HTTPS Configuration}
+
+The service listens on port 3000 with TLS enabled using certificates issued by the PKI:
+\begin{itemize}
+    \item \textbf{Certificate}: web01.org.local-cert.pem (RSA 4096-bit)
+    \item \textbf{Private Key}: web01.org.local-key.pem
+    \item \textbf{CA Chain}: ca-chain.pem (Intermediate CA + Root CA)
+    \item \textbf{TLS Version}: TLS 1.3 minimum
+    \item \textbf{Cipher Suites}: Strong ciphers only (AES-256-GCM, ChaCha20-Poly1305)
+\end{itemize}
+
+HTTPS server initialization code:
+\begin{verbatim}
+const httpsOptions = {
+  cert: fs.readFileSync('/app/certs/web01-cert.pem'),
+  key: fs.readFileSync('/app/certs/web01-key.pem'),
+  ca: fs.readFileSync('/app/certs/ca-chain.pem'),
+  minVersion: 'TLSv1.3'
+};
+https.createServer(httpsOptions, app).listen(3000);
+\end{verbatim}
+
+\subsubsection{Database TLS/mTLS Configuration}
+
+Connection to PostgreSQL uses mutual TLS authentication:
+\begin{itemize}
+    \item \textbf{Client Certificate}: web01-db-client-cert.pem with extendedKeyUsage = clientAuth
+    \item \textbf{Client Private Key}: web01-db-client-key.pem
+    \item \textbf{CA Certificate}: ca.crt for server verification
+    \item \textbf{TLS Mode}: rejectUnauthorized = true (verify server certificate)
+    \item \textbf{Hostname Bypass}: checkServerIdentity disabled due to container networking
+\end{itemize}
+
+Database connection configuration:
+\begin{verbatim}
+dbConfig.ssl = {
+  rejectUnauthorized: true,
+  ca: fs.readFileSync('/app/certs/ca.crt'),
+  cert: fs.readFileSync('/app/certs/web01-db-client.crt'),
+  key: fs.readFileSync('/app/certs/web01-db-client.key'),
+  checkServerIdentity: () => undefined
+};
+\end{verbatim}
+
+\subsubsection{Deployment Steps}
+
+\begin{enumerate}
+    \item \textbf{Certificate Generation}: Issue server certificate web01.org.local and client certificate for database authentication using PKI scripts.
+    \item \textbf{Docker Build}: Build image from WEB/Dockerfile (Node.js 18 base, application code, dependencies).
+    \item \textbf{Network Configuration}: Assign static IPs in docker-compose.yml (DMZ: 172.18.0.3, Internal: 172.19.0.5).
+    \item \textbf{Certificate Mounting}: Mount certificates as read-only volumes in /app/certs.
+    \item \textbf{Environment Variables}: Configure DB\_HOST, DB\_PORT, DB\_USER, DB\_PASSWORD, DB\_NAME via .env file.
+    \item \textbf{Container Start}: Launch with \texttt{docker-compose up -d web01}.
+\end{enumerate}
+
+\subsection{Security Policies Implementation}
+
+\subsubsection{Two-Factor Authentication (2FA)}
+
+The service implements TOTP-based 2FA for user registration:
+
+\textbf{Registration Flow}:
+\begin{enumerate}
+    \item User submits username and password to /register endpoint
+    \item Password hashed with bcrypt (10 salt rounds)
+    \item TOTP secret generated using speakeasy library
+    \item QR code generated for secret (otpauth:// URI)
+    \item User data stored in PostgreSQL with encrypted connection
+    \item Response includes QR code for authenticator app setup
+\end{enumerate}
+
+\textbf{Implementation}:
+\begin{verbatim}
+const secret = speakeasy.generateSecret({
+  name: `SecureApp (${username})`,
+  length: 32
+});
+const qrCode = await QRCode.toDataURL(secret.otpauth_url);
+// Store secret.base32 in database
+\end{verbatim}
+
+\subsubsection{Traffic Encryption}
+
+All traffic to/from web01 is encrypted:
+\begin{itemize}
+    \item \textbf{Client → Nginx}: HTTPS/TLS 1.3 (port 443)
+    \item \textbf{Nginx → Web01}: HTTPS/TLS 1.3 (port 3000) with certificate verification
+    \item \textbf{Web01 → Database}: PostgreSQL TLS with mTLS client authentication (port 5432)
+\end{itemize}
+
+\subsubsection{Configuration File Integrity}
+
+\textbf{Decision}: Configuration integrity checking should be implemented for server.js and package.json.
+
+\textbf{Method}: SHA-256 checksums stored in /app/config-checksums.sha256, verified on startup.
+
+\textbf{Status}: Planned for implementation (currently implemented for firewall and SSH services).
+
+\subsection{API Endpoints}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Description} \\
+\midrule
+/health & GET & Health check (no auth required) \\
+/register & POST & User registration with 2FA setup \\
+/login & POST & User login with TOTP verification \\
+\bottomrule
+\end{tabular}
+\caption{Web Service API Endpoints}
+\end{table}
+
+\subsection{Implementation Decisions}
+
+\subsubsection{Dual Network Connectivity}
+
+\textbf{Decision}: web01 connected to both DMZ and internal networks.
+
+\textbf{Justification}: Receives public traffic from nginx (DMZ) while accessing database (internal network). Firewall rules restrict traffic flows: only nginx→web01:3000 and web01→db01:5432 allowed.
+
+\subsubsection{Client Certificate Authentication}
+
+\textbf{Decision}: Use mTLS with client certificates for database connections.
+
+\textbf{Justification}: Provides stronger authentication than password-only. Certificate must have extendedKeyUsage = clientAuth. PostgreSQL configured with clientcert=verify-ca in pg\_hba.conf.
+
+\subsubsection{Static IP Assignment}
+
+\textbf{Decision}: Assign static IPs to web01 (172.18.0.3 in DMZ, 172.19.0.5 in internal).
+
+\textbf{Justification}: Firewall rules reference specific IP addresses. Dynamic IPs would break firewall rules on container restart. Docker IPAM used to ensure IP persistence.

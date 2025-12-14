@@ -1,0 +1,351 @@
+% Insert this content into Chapter 5 (Data Flows)
+
+\chapter{Data Flows and Communication}
+
+\section{(c) Data Flows of Services}
+
+This section documents all data flows between services in the implemented infrastructure, including protocols, port numbers, encryption mechanisms, and firewall enforcement.
+
+\subsection{Network Architecture Overview}
+
+The infrastructure implements network segmentation with two distinct zones:
+
+\begin{itemize}
+    \item \textbf{DMZ Network (172.18.0.0/16)}: Public-facing services
+    \begin{itemize}
+        \item nginx01: 172.18.0.4 (reverse proxy)
+        \item web01: 172.18.0.3 (web service DMZ interface)
+        \item fw01: 172.18.0.2 (firewall DMZ interface)
+    \end{itemize}
+    \item \textbf{Internal Network (172.19.0.0/16)}: Backend services
+    \begin{itemize}
+        \item ca01: 172.19.0.2 (PKI/Certificate Authority)
+        \item db01: 172.19.0.3 (PostgreSQL database)
+        \item web01: 172.19.0.5 (web service internal interface)
+        \item fw01: 172.19.0.4 (firewall internal interface)
+    \end{itemize}
+\end{itemize}
+
+\subsection{Complete Data Flow Table}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lllll}
+\toprule
+\textbf{Source} & \textbf{Destination} & \textbf{Protocol} & \textbf{Port} & \textbf{Encryption} \\
+\midrule
+\multicolumn{5}{c}{\textbf{User-Facing Flows}} \\
+\midrule
+Client (Browser) & nginx01 & HTTPS & 443 & TLS 1.3 \\
+nginx01 & web01 (DMZ) & HTTPS & 3000 & TLS 1.3 \\
+\midrule
+\multicolumn{5}{c}{\textbf{Internal Service Flows}} \\
+\midrule
+web01 (Internal) & db01 & PostgreSQL & 5432 & TLS + mTLS \\
+\midrule
+\multicolumn{5}{c}{\textbf{Administrative Access}} \\
+\midrule
+Admin (Windows) & Kali VM (ssh01) & SSH & 22 & SSH/Ed25519 \\
+Admin (Kali) & Containers & Docker exec & N/A & Local \\
+\midrule
+\multicolumn{5}{c}{\textbf{Blocked Flows (Firewall Rules)}} \\
+\midrule
+DMZ Network & db01 & ANY & 5432 & \textit{BLOCKED} \\
+ANY & ca01 & ANY & ALL & \textit{BLOCKED} \\
+\bottomrule
+\end{tabular}
+\caption{Complete Data Flows in Infrastructure}
+\end{table}
+
+\subsection{Detailed Data Flow Descriptions}
+
+\subsubsection{Flow 1: Client → nginx01 (Port 443, HTTPS/TLS 1.3)}
+
+\textbf{Purpose}: External users access web application through HTTPS.
+
+\textbf{Path}: Internet → nginx01 (172.18.0.4:443)
+
+\textbf{Security Mechanisms}:
+\begin{itemize}
+    \item TLS 1.3 encryption with strong cipher suites (AES-256-GCM, ChaCha20-Poly1305)
+    \item Server authentication: nginx presents web01.org.local certificate (RSA 4096-bit)
+    \item Certificate validation: Client verifies certificate chain (Intermediate CA + Root CA)
+    \item Perfect Forward Secrecy (PFS) with ECDHE key exchange
+\end{itemize}
+
+\textbf{Firewall Enforcement}: Allowed (external access point, not filtered by fw01)
+
+\subsubsection{Flow 2: nginx01 → web01 (Port 3000, HTTPS/TLS 1.3)}
+
+\textbf{Purpose}: Nginx reverse proxy forwards requests to web application backend.
+
+\textbf{Path}: nginx01 (172.18.0.4) → web01 (172.18.0.3:3000)
+
+\textbf{Security Mechanisms}:
+\begin{itemize}
+    \item TLS 1.3 encryption for internal communication
+    \item Upstream certificate verification: nginx validates web01's TLS certificate
+    \item Trusted CA configuration: \texttt{proxy\_ssl\_trusted\_certificate ca-chain.crt}
+    \item Certificate verification: \texttt{proxy\_ssl\_verify on}
+\end{itemize}
+
+\textbf{Nginx Configuration}:
+\begin{verbatim}
+upstream web_backend {
+    server 172.18.0.3:3000;
+}
+
+location / {
+    proxy_pass https://web_backend;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/nginx/tls/ca-chain.crt;
+    proxy_ssl_protocols TLSv1.3;
+}
+\end{verbatim}
+
+\textbf{Firewall Enforcement}: 
+\begin{verbatim}
+# nftables rule in fw01 FORWARD chain
+ip saddr 172.18.0.4 ip daddr 172.18.0.3 tcp dport 3000 
+    ct state new accept
+\end{verbatim}
+
+\textbf{Justification}: Although Assignment 2 Table 1 specifies TCP/443, our architecture uses port 3000 for internal web service communication. Port 443 is the external entry point (nginx), while 3000 is the actual application port. This provides additional security through obscurity and follows microservices best practices.
+
+\subsubsection{Flow 3: web01 → db01 (Port 5432, PostgreSQL TLS + mTLS)}
+
+\textbf{Purpose}: Web application accesses database for user data storage and retrieval.
+
+\textbf{Path}: web01 (172.19.0.5) → db01 (172.19.0.3:5432)
+
+\textbf{Security Mechanisms}:
+\begin{itemize}
+    \item PostgreSQL native TLS (libpq SSL/TLS support)
+    \item Mutual TLS (mTLS): Both server and client present certificates
+    \item Server authentication: db01 presents db01.org.local certificate (RSA 4096-bit)
+    \item Client authentication: web01 presents web01-db-client certificate with \texttt{extendedKeyUsage = clientAuth}
+    \item Certificate verification: Both sides verify certificate chains against trusted CA
+    \item Password authentication: SCRAM-SHA-256 hashed passwords (secondary authentication factor)
+\end{itemize}
+
+\textbf{Client Configuration} (web01):
+\begin{verbatim}
+dbConfig.ssl = {
+  rejectUnauthorized: true,
+  ca: fs.readFileSync('/app/certs/ca.crt'),
+  cert: fs.readFileSync('/app/certs/web01-db-client.crt'),
+  key: fs.readFileSync('/app/certs/web01-db-client.key'),
+  checkServerIdentity: () => undefined  // Container networking
+};
+\end{verbatim}
+
+\textbf{Server Configuration} (db01):
+\begin{verbatim}
+# postgresql.conf
+ssl = on
+ssl_cert_file = '/var/lib/postgresql/tls-fixed/server.crt'
+ssl_key_file = '/var/lib/postgresql/tls-fixed/server.key'
+ssl_ca_file = '/var/lib/postgresql/tls-fixed/ca.crt'
+
+# pg_hba.conf
+hostssl all all 0.0.0.0/0 scram-sha-256 clientcert=verify-ca
+\end{verbatim}
+
+\textbf{Firewall Enforcement}:
+\begin{verbatim}
+# nftables rule in fw01 FORWARD chain
+ip saddr 172.19.0.5 ip daddr 172.19.0.3 tcp dport 5432 
+    ct state new accept
+\end{verbatim}
+
+\textbf{Blocked Access}:
+\begin{verbatim}
+# Explicit deny rule: DMZ cannot directly access database
+ip saddr 172.18.0.0/16 ip daddr 172.19.0.3 tcp dport 5432 
+    log prefix "[FW-DENY-DMZ-DB] " drop
+\end{verbatim}
+
+This ensures database is only accessible through application layer (web01), not directly from DMZ network.
+
+\subsubsection{Flow 4: Admin → Kali VM (Port 22, SSH with Certificates)}
+
+\textbf{Purpose}: Remote administrative access to infrastructure management host.
+
+\textbf{Path}: Windows host → Kali VM (192.168.232.135:22)
+
+\textbf{Security Mechanisms}:
+\begin{itemize}
+    \item SSH Certificate-based authentication (no passwords)
+    \item User certificate signed by SSH CA (Ed25519)
+    \item Host key verification: Ed25519 host keys
+    \item Encryption: SSH protocol with strong algorithms (AES-256, ChaCha20)
+    \item Session limits: MaxSessions 5 (per Assignment 2 requirement)
+\end{itemize}
+
+\textbf{SSH Configuration}:
+\begin{verbatim}
+# /etc/ssh/sshd_config
+TrustedUserCAKeys /etc/ssh/ca.pub
+PasswordAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+MaxSessions 5
+MaxStartups 5:50:10
+PermitRootLogin no
+\end{verbatim}
+
+\textbf{Authentication Process}:
+\begin{enumerate}
+    \item Admin presents user certificate (admin-key-cert.pub) signed by SSH CA
+    \item SSH server verifies certificate signature against trusted CA (/etc/ssh/ca.pub)
+    \item Certificate validity period checked (1 year)
+    \item Certificate principals verified (username must match)
+    \item Connection established with encrypted session
+\end{enumerate}
+
+\textbf{Connection Command}:
+\begin{verbatim}
+ssh -i admin-key -o CertificateFile=admin-key-cert.pub admin@192.168.232.135
+\end{verbatim}
+
+\textbf{Firewall Enforcement}: Not filtered by fw01 (administrative access to hypervisor/VM layer)
+
+\subsubsection{Flow 5: Admin → Containers (Docker Exec, Local)}
+
+\textbf{Purpose}: Direct container management and PKI operations.
+
+\textbf{Path}: Kali VM → Docker containers (via docker socket)
+
+\textbf{Security Mechanisms}:
+\begin{itemize}
+    \item Local access only (no network exposure)
+    \item Requires sudo privileges on host
+    \item Docker socket access control
+    \item Container isolation
+\end{itemize}
+
+\textbf{Usage Examples}:
+\begin{verbatim}
+# PKI certificate operations
+sudo docker exec -it ca01 bash
+cd /pki && ./scripts/issue-server-cert.sh hostname
+
+# Database management
+sudo docker exec -it db01 psql -U admin -d securedb
+
+# Firewall rule inspection
+sudo docker exec fw01 nft list ruleset
+\end{verbatim}
+
+\textbf{Firewall Enforcement}: Not applicable (local docker socket, not network traffic)
+
+\subsubsection{Blocked Flow: DMZ → Database (Denied by Firewall)}
+
+\textbf{Attempted Path}: DMZ network (172.18.0.0/16) → db01 (172.19.0.3:5432)
+
+\textbf{Security Policy}: Explicitly blocked by firewall to prevent direct database access from public-facing network.
+
+\textbf{Firewall Rule}:
+\begin{verbatim}
+ip saddr 172.18.0.0/16 ip daddr 172.19.0.3 tcp dport 5432 
+    log prefix "[FW-DENY-DMZ-DB] " drop
+\end{verbatim}
+
+\textbf{Justification}: Database should only be accessible through application layer (web01). Direct access from DMZ would bypass application security controls (authentication, authorization, input validation).
+
+\subsubsection{Blocked Flow: ANY → CA (Denied by Firewall)}
+
+\textbf{Attempted Path}: Any source → ca01 (172.19.0.2, all ports)
+
+\textbf{Security Policy}: Certificate Authority completely isolated from network access. All operations performed manually via docker exec.
+
+\textbf{Firewall Rule}:
+\begin{verbatim}
+ip daddr 172.19.0.2 log prefix "[FW-DENY-CA-ACCESS] " drop
+\end{verbatim}
+
+\textbf{Justification}: CA is the trust root of entire infrastructure. Network isolation eliminates remote attack surface. Certificate operations are administrative tasks requiring out-of-band access.
+
+\textbf{Test Result}:
+\begin{verbatim}
+$ docker exec web01 timeout 2 curl http://172.19.0.2:80
+curl: (7) Failed to connect to 172.19.0.2: Couldn't connect to server
+\end{verbatim}
+
+Connection blocked as expected.
+
+\subsection{End-to-End Data Flow Example}
+
+\textbf{Scenario}: User registration with 2FA
+
+\begin{enumerate}
+    \item \textbf{Client → nginx (443/HTTPS)}: Browser sends registration request
+    \begin{itemize}
+        \item Encrypted with TLS 1.3
+        \item nginx validates client, forwards to backend
+    \end{itemize}
+    
+    \item \textbf{nginx → web01 (3000/HTTPS)}: Nginx proxies request to web service
+    \begin{itemize}
+        \item Encrypted with TLS 1.3
+        \item Firewall allows: nginx01:172.18.0.4 → web01:172.18.0.3:3000
+        \item nginx verifies web01's TLS certificate
+    \end{itemize}
+    
+    \item \textbf{web01 → db01 (5432/PostgreSQL TLS)}: Web service stores user data
+    \begin{itemize}
+        \item Encrypted with PostgreSQL TLS + mTLS
+        \item Firewall allows: web01:172.19.0.5 → db01:172.19.0.3:5432
+        \item Mutual certificate verification
+        \item SCRAM-SHA-256 password authentication
+    \end{itemize}
+    
+    \item \textbf{db01 → web01}: Database returns success
+    \begin{itemize}
+        \item Response encrypted with same TLS session
+        \item Firewall allows return traffic (stateful: ct state established,related)
+    \end{itemize}
+    
+    \item \textbf{web01 → nginx}: Web service returns registration success + QR code
+    \begin{itemize}
+        \item Response encrypted with TLS 1.3
+        \item Firewall allows return traffic
+    \end{itemize}
+    
+    \item \textbf{nginx → Client}: nginx forwards response to browser
+    \begin{itemize}
+        \item Encrypted with TLS 1.3
+        \item Browser displays QR code for 2FA setup
+    \end{itemize}
+\end{enumerate}
+
+\textbf{Total Encryption Layers}: 3 (Client↔nginx TLS, nginx↔web01 TLS, web01↔db01 TLS+mTLS)
+
+\textbf{Firewall Checks}: 2 (nginx→web01, web01→db01)
+
+\textbf{Authentication Factors}: 2 (Password + TOTP secret)
+
+\subsection{Protocol Stack Summary}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Layer} & \textbf{Protocol} & \textbf{Purpose} \\
+\midrule
+Application & HTTPS, PostgreSQL & Service communication \\
+Transport & TLS 1.3, SSH & Encryption, integrity \\
+Network & IPv4 & Routing, addressing \\
+Data Link & Ethernet & Physical transmission \\
+\midrule
+\multicolumn{3}{c}{\textbf{Security Overlays}} \\
+\midrule
+Cryptography & RSA 4096, Ed25519, AES-256 & Keys, encryption \\
+Integrity & SHA-256, HMAC & Hashing, verification \\
+Authentication & X.509 certs, SSH certs, passwords & Identity verification \\
+Access Control & nftables, pg\_hba.conf & Authorization \\
+\bottomrule
+\end{tabular}
+\caption{Protocol Stack with Security Mechanisms}
+\end{table}

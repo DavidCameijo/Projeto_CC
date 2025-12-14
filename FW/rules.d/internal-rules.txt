@@ -1,0 +1,17 @@
+# Internal Zone Rules
+# web01, db01, ca01 communication
+
+# Allow web01 to db01 (PostgreSQL with mTLS)
+# Source: web01
+# Dest: db01:5432
+# Protocol: TCP/5432
+
+# Allow internal DNS resolution
+# Protocol: UDP/TCP 53
+
+# BLOCK ALL ACCESS TO CA (ca01)
+# CA operations are manual only (via docker exec)
+# Source: ANY
+# Dest: ca01 (172.19.0.4)
+# Action: DENY ALL
+# Reason: Certificate authority should be isolated and accessed only by administrators

@@ -6,22 +6,41 @@ const QRCode = require("qrcode");
 const rateLimit = require("express-rate-limit");
 const crypto = require("crypto");
 const fs = require("fs");
+const https = require("https");
+const http = require("http");
 
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// DB connection pool
-const pool = new Pool({
+// DB connection pool with mTLS support
+const dbConfig = {
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME
-});
+};
+
+// Add TLS configuration if client certs are available
+if (fs.existsSync('/app/certs/ca.crt') && fs.existsSync('/app/certs/web02-client.crt') && fs.existsSync('/app/certs/web02-client.key')) {
+  dbConfig.ssl = {
+    rejectUnauthorized: true,
+    ca: fs.readFileSync('/app/certs/ca.crt'),
+    cert: fs.readFileSync('/app/certs/web02-client.crt'),
+    key: fs.readFileSync('/app/certs/web02-client.key'),
+    checkServerIdentity: () => undefined // Skip hostname verification (cert is for db01.org.local, we connect to db01)
+  };
+  console.log('[TLS] PostgreSQL client certificate authentication enabled');
+} else {
+  console.warn('[TLS] Database client certificates not found - attempting without mTLS');
+}
+
+const pool = new Pool(dbConfig);
 
 app.use(express.json());
+app.set('trust proxy', 1); // ✅ Trust nginx reverse proxy headers
 
 // ==================== CONFIG INTEGRITY CHECK ====================
 function verifyConfigIntegrity() {
@@ -42,23 +61,32 @@ function verifyConfigIntegrity() {
 
 // ==================== RATE LIMITERS ====================
 const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // 3 registrations per hour per IP
+  windowMs: 60 * 60 * 1000,
+  max: 3,
   message: 'Too many registration attempts, try again later',
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per 15 min
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: 'Too many login attempts, try again later',
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => req.path === '/health',
 });
 
+// ==================== HEALTH CHECK ====================
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    https: 'enabled'
+  });
+});
 
+// ==================== HOME ====================
 app.get("/", (req, res) => {
   res.send(`
     <!doctype html>
@@ -75,8 +103,7 @@ app.get("/", (req, res) => {
         </style>
       </head>
       <body>
-        <h1> Secure Authentication System</h1>
-
+        <h1>🔒 Secure Authentication System</h1>
         <div class="section">
           <h2>Step 1: Register New User</h2>
           <form id="registerForm">
@@ -86,14 +113,12 @@ app.get("/", (req, res) => {
           </form>
           <pre id="registerResult"></pre>
         </div>
-
         <div class="section">
           <h2>Step 2: Setup 2FA (After Register)</h2>
           <p>Scan QR code with Google Authenticator or Authy</p>
           <div id="qrCodeContainer"></div>
           <p>Or enter manually: <code id="secretCode"></code></p>
         </div>
-
         <div class="section">
           <h2>Step 3: Login with 2FA</h2>
           <form id="loginForm">
@@ -104,8 +129,6 @@ app.get("/", (req, res) => {
           </form>
           <pre id="loginResult"></pre>
         </div>
-
-
         <script>
           document.getElementById('registerForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -118,7 +141,6 @@ app.get("/", (req, res) => {
               });
               const json = await res.json();
               document.getElementById('registerResult').textContent = JSON.stringify(json, null, 2);
-              
               if (json.qrCode) {
                 document.getElementById('qrCodeContainer').innerHTML = '<img src="' + json.qrCode + '" />';
                 document.getElementById('secretCode').textContent = json.secret;
@@ -139,7 +161,6 @@ app.get("/", (req, res) => {
               });
               const json = await res.json();
               document.getElementById('loginResult').textContent = JSON.stringify(json, null, 2);
-              
             } catch (err) {
               document.getElementById('loginResult').textContent = 'Error: ' + err.message;
             }
@@ -203,7 +224,7 @@ app.post("/register", registerLimiter, async (req, res) => {
       [username, passwordHash, "user", secret.base32, false]
     );
 
-    const user = result.rows;
+    const user = result.rows[0];
     const qrCode = await QRCode.toDataURL(secret.otpauth_url);
 
     console.log(`[REGISTER] SUCCESS: username=${username} id=${user.id}`);
@@ -258,8 +279,6 @@ app.post("/login", loginLimiter, async (req, res) => {
     }
 
     const user = result.rows[0];
-    console.log("DEBUG user from DB:", user); // TEMP DEBUG
-
 
     const passwordMatch = bcrypt.compareSync(password, user.password_hash);
     if (!passwordMatch) {
@@ -308,12 +327,44 @@ app.post("/login", loginLimiter, async (req, res) => {
     });
   }
 });
-
-// ==================== STARTUP ====================
+// ==================== HTTPS STARTUP ====================
 verifyConfigIntegrity();
 
-app.listen(PORT, () => {
-  console.log(`[SERVER] Web API listening on port ${PORT}`);
+// Load HTTPS certificates with fallback
+let server;
+let httpsEnabled = false;
+
+try {
+  // Check if server certs exist
+  if (fs.existsSync('/app/certs/web02-server.crt') && 
+      fs.existsSync('/app/certs/web02-server.key')) {
+    
+    const httpsOptions = {
+      key: fs.readFileSync('/app/certs/web02-server.key'),
+      cert: fs.readFileSync('/app/certs/web02-server.crt'),
+      ca: fs.readFileSync('/app/certs/ca.crt')
+    };
+    
+    server = https.createServer(httpsOptions, app);
+    httpsEnabled = true;
+    
+    console.log('[SERVER] ✅ HTTPS enabled with mTLS');
+    console.log('[SERVER] Certificate: web02.org.local (SERVER cert)');
+    console.log('[SERVER] Listening for nginx reverse proxy');
+    
+  } else {
+    throw new Error('Server certificates not found in /app/certs/');
+  }
+  
+} catch (err) {
+  console.warn('[SERVER] ⚠️  HTTPS failed:', err.message);
+  console.log('[SERVER] Falling back to HTTP');
+  server = require('http').createServer(app);
+  httpsEnabled = false;
+}
+
+server.listen(PORT, () => {
+  console.log(`[SERVER] Web API listening on ${httpsEnabled ? 'HTTPS' : 'HTTP'} port ${PORT}`);
   console.log(`[SERVER] 2FA enabled with TOTP (Time-based OTP)`);
   console.log(`[SERVER] Health check: GET /health`);
 });
