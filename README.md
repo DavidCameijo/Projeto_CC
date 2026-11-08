@@ -90,7 +90,7 @@ Projeto_CC/
 ├── pki/                     # Root/intermediate CA and certificate scripts
 ├── SSH01/                   # Kali VM SSH setup and verification scripts
 ├── postgres/tls/            # PostgreSQL server certificate material
-└── report/                  # LaTeX report and test evidence
+├── Report.pdf               # Detailed academic report and test evidence
 ```
 
 The Compose services are `web01`, `db01`, `nginx`, `ca01`, and `fw01`.
@@ -230,9 +230,9 @@ Verification is provided through executable checks and manual scenarios:
 sudo ./SSH01/verify-ssh-integrity.sh
 ```
 
-The `report/` directory contains LaTeX documentation and screenshots of
-manual checks for registration, JWT authentication, RBAC, login lockout,
-TLS/mTLS, firewall rules, and integrity verification.
+[`Report.pdf`](Report.pdf) contains the detailed academic report and evidence
+for registration, JWT authentication, RBAC, login lockout, TLS/mTLS, firewall
+rules, and integrity verification.
 
 ## Known limitations
 
